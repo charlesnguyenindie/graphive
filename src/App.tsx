@@ -26,6 +26,7 @@ import { CanvasHint } from './components/CanvasHint';
 import { UnifiedControls } from './components/UnifiedControls';
 import { ToastContainer } from './components/ToastContainer';
 import { PropertyInspector } from './components/PropertyInspector';
+import { DashboardPanel } from './components/DashboardPanel';
 import './App.css';
 
 // Register custom node types
@@ -50,7 +51,7 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
     const { fitView } = useReactFlow();
 
     // V2: Use useShallow to prevent re-renders on unrelated state changes
-    const { nodes, edges, onNodesChange, onEdgesChange, onConnect, onReconnect, deleteSelected } =
+    const { nodes, edges, onNodesChange, onEdgesChange, onConnect, onReconnect, deleteSelected, activeDashboardId } =
         useGraphStore(
             useShallow((state) => ({
                 nodes: state.nodes,
@@ -60,6 +61,7 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
                 onConnect: state.onConnect,
                 onReconnect: state.onReconnect,
                 deleteSelected: state.deleteSelected,
+                activeDashboardId: state.activeDashboardId,
             }))
         );
 
@@ -80,6 +82,19 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
         }
         prevNodeCountRef.current = nodes.length;
     }, [nodes.length, fitView]);
+
+    // V15: Fit view when dashboard is loaded
+    const prevDashboardIdRef = useRef(activeDashboardId);
+    useEffect(() => {
+        if (activeDashboardId !== prevDashboardIdRef.current && activeDashboardId !== null) {
+            // Small delay to allow nodes to render
+            const timeout = setTimeout(() => {
+                fitView({ padding: 0.2, duration: 300 });
+            }, 100);
+            return () => clearTimeout(timeout);
+        }
+        prevDashboardIdRef.current = activeDashboardId;
+    }, [activeDashboardId, fitView]);
 
     // Handle keyboard deletion
     const handleKeyDown = useCallback(
@@ -221,6 +236,8 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
                 <Toolbar />
                 <SearchBar />
                 <QueryPanel />
+                {/* V15: Dashboard Panel */}
+                <DashboardPanel />
                 {/* V14: Property Inspector (Sidebar) */}
                 <PropertyInspector />
                 {/* V10: Canvas Hint for empty state */}

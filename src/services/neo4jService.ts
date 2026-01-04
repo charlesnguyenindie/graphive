@@ -164,6 +164,11 @@ export function transformNeo4jData(records: Neo4jRecord[]): { nodes: Node<NodeDa
             const value = record.get(key);
 
             if (isNeo4jNode(value)) {
+                // V15: Skip internal dashboard nodes
+                if (value.labels.includes('_GraphiveDashboard')) {
+                    continue;
+                }
+
                 // INTERNAL ID (for relationship mapping)
                 const internalKey = value.elementId || value.identity.toString();
 
@@ -747,3 +752,143 @@ export async function expandNeighbors(
     }
 }
 
+// ============================================================
+// V15: Dashboard Management
+// ============================================================
+
+/**
+ * Dashboard metadata type
+ */
+export interface DashboardMeta {
+    id: string;
+    name: string;
+    query: string;
+    layout: string; // JSON string
+    createdAt?: string;
+    updatedAt?: string;
+}
+
+/**
+ * Get all dashboards
+ */
+export async function getDashboards(): Promise<DashboardMeta[]> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+
+    try {
+        const result = await session.run(
+            `MATCH (d:_GraphiveDashboard)
+             RETURN elementId(d) AS id, d.name AS name, d.query AS query, d.layout AS layout, 
+                    d.createdAt AS createdAt, d.updatedAt AS updatedAt
+             ORDER BY d.updatedAt DESC`
+        );
+
+        return result.records.map(record => ({
+            id: record.get('id'),
+            name: record.get('name') || 'Untitled',
+            query: record.get('query') || '',
+            layout: record.get('layout') || '{}',
+            createdAt: record.get('createdAt'),
+            updatedAt: record.get('updatedAt'),
+        }));
+    } finally {
+        await session.close();
+    }
+}
+
+/**
+ * Get a specific dashboard by ID
+ */
+export async function getDashboard(id: string): Promise<DashboardMeta | null> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+
+    try {
+        const result = await session.run(
+            `MATCH (d:_GraphiveDashboard)
+             WHERE elementId(d) = $id
+             RETURN elementId(d) AS id, d.name AS name, d.query AS query, d.layout AS layout,
+                    d.createdAt AS createdAt, d.updatedAt AS updatedAt`,
+            { id }
+        );
+
+        if (result.records.length === 0) return null;
+
+        const record = result.records[0];
+        return {
+            id: record.get('id'),
+            name: record.get('name') || 'Untitled',
+            query: record.get('query') || '',
+            layout: record.get('layout') || '{}',
+            createdAt: record.get('createdAt'),
+            updatedAt: record.get('updatedAt'),
+        };
+    } finally {
+        await session.close();
+    }
+}
+
+/**
+ * Save (create or update) a dashboard
+ * @param id - If null, creates new dashboard. Otherwise updates existing.
+ * @param name - Dashboard name
+ * @param query - Cypher query for this dashboard
+ * @param layout - JSON string of layout data
+ * @returns The element ID of the saved dashboard
+ */
+export async function saveDashboard(
+    id: string | null,
+    name: string,
+    query: string,
+    layout: string
+): Promise<string> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+    const now = new Date().toISOString();
+
+    try {
+        if (id) {
+            // Update existing
+            await session.run(
+                `MATCH (d:_GraphiveDashboard)
+                 WHERE elementId(d) = $id
+                 SET d.name = $name, d.query = $query, d.layout = $layout, d.updatedAt = $updatedAt`,
+                { id, name, query, layout, updatedAt: now }
+            );
+            console.log('✅ Dashboard updated:', id);
+            return id;
+        } else {
+            // Create new
+            const result = await session.run(
+                `CREATE (d:_GraphiveDashboard {name: $name, query: $query, layout: $layout, createdAt: $createdAt, updatedAt: $updatedAt})
+                 RETURN elementId(d) AS id`,
+                { name, query, layout, createdAt: now, updatedAt: now }
+            );
+            const newId = result.records[0].get('id');
+            console.log('✅ Dashboard created:', newId);
+            return newId;
+        }
+    } finally {
+        await session.close();
+    }
+}
+
+/**
+ * Delete a dashboard
+ */
+export async function deleteDashboard(id: string): Promise<void> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+
+    try {
+        await session.run(
+            `MATCH (d:_GraphiveDashboard)
+             WHERE elementId(d) = $id
+             DETACH DELETE d`,
+            { id }
+        );
+        console.log('🗑️ Dashboard deleted:', id);
+    } finally {
+        await session.close();
+    }
+}

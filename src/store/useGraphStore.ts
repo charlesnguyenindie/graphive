@@ -33,6 +33,12 @@ import {
     addNodeLabel as neo4jAddLabel,
     removeNodeLabel as neo4jRemoveLabel,
     expandNeighbors as neo4jExpandNeighbors,
+    // V15: Dashboard
+    getDashboards as neo4jGetDashboards,
+    getDashboard as neo4jGetDashboard,
+    saveDashboard as neo4jSaveDashboard,
+    deleteDashboard as neo4jDeleteDashboard,
+    DashboardMeta,
 } from '../services/neo4jService';
 import { getLayoutedElements } from '../services/layoutService';
 import { useToastStore } from './useToastStore';
@@ -98,6 +104,16 @@ interface GraphState {
     removeLabel: (nodeId: string, label: string) => void;
     expandNeighbors: (nodeId: string) => void;
     setNodeDisplayKey: (nodeId: string, key: string | null) => void;
+    // V15: Dashboard
+    activeDashboardId: string | null;
+    dashboardName: string;
+    isDashboardDirty: boolean;
+    loadDashboard: (id: string) => Promise<void>;
+    saveDashboard: () => Promise<void>;
+    setIsDashboardDirty: (dirty: boolean) => void;
+    setDashboardName: (name: string) => void;
+    setCypherQuery: (query: string) => void;
+    cypherQuery: string;
 }
 
 // Helper: Get all descendant node IDs recursively
@@ -138,11 +154,47 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     isSyncing: false,
     syncError: null,
     isNeo4jConnected: false,
+    // V15: Dashboard state
+    activeDashboardId: null,
+    dashboardName: 'Untitled',
+    isDashboardDirty: false,
+    cypherQuery: 'MATCH (n)\nOPTIONAL MATCH (n)-[r]-()\nRETURN n, r',
 
     onNodesChange: (changes) => {
+        // V15: Detect position changes for dirty tracking
+        const hasPositionChange = changes.some(
+            (c) => c.type === 'position' && c.position
+        );
+
+        const newNodes = applyNodeChanges(changes, get().nodes);
+
         set({
-            nodes: applyNodeChanges(changes, get().nodes),
+            nodes: newNodes,
+            // Mark dirty if position changed
+            ...(hasPositionChange ? { isDashboardDirty: true } : {}),
         });
+
+        // V15: Auto-save to LocalStorage on position changes (debounced)
+        if (hasPositionChange) {
+            const { dashboardName, cypherQuery, activeDashboardId } = get();
+            const layout: Record<string, { x: number; y: number }> = {};
+            for (const node of newNodes) {
+                layout[node.id] = { x: node.position.x, y: node.position.y };
+            }
+
+            try {
+                localStorage.setItem('graphive_session', JSON.stringify({
+                    activeDashboardId,
+                    dashboardName,
+                    cypherQuery,
+                    layout,
+                    savedAt: new Date().toISOString(),
+                }));
+                console.log('💾 Auto-saved to LocalStorage');
+            } catch (e) {
+                console.warn('Failed to save to LocalStorage:', e);
+            }
+        }
     },
 
     onEdgesChange: (changes) => {
@@ -869,5 +921,119 @@ export const useGraphStore = create<GraphState>((set, get) => ({
             ),
         });
         console.log('🏷️ Display key set:', { nodeId, key });
+    },
+
+    // V15: Dashboard actions
+    setIsDashboardDirty: (dirty) => {
+        set({ isDashboardDirty: dirty });
+    },
+
+    setDashboardName: (name) => {
+        set({ dashboardName: name, isDashboardDirty: true });
+    },
+
+    setCypherQuery: (query) => {
+        set({ cypherQuery: query });
+    },
+
+    loadDashboard: async (id) => {
+        set({ isLoading: true });
+
+        try {
+            const dashboard = await neo4jGetDashboard(id);
+            if (!dashboard) {
+                useToastStore.getState().addToast('error', 'Dashboard not found');
+                set({ isLoading: false });
+                return;
+            }
+
+            // Parse layout
+            let layout: Record<string, { x?: number; y?: number; w?: number; h?: number }> = {};
+            try {
+                const parsed = JSON.parse(dashboard.layout);
+                layout = parsed.nodes || {};
+            } catch { /* empty layout */ }
+
+            // Set dashboard metadata
+            set({
+                activeDashboardId: id,
+                dashboardName: dashboard.name,
+                cypherQuery: dashboard.query,
+                isDashboardDirty: false,
+            });
+
+            // Execute the query
+            const result = await neo4jExecuteQuery(dashboard.query);
+            const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+                result.nodes,
+                result.edges
+            );
+
+            // Apply saved positions from layout
+            const nodesWithLayout = layoutedNodes.map(node => {
+                const savedPos = layout[node.id];
+                if (savedPos) {
+                    return {
+                        ...node,
+                        position: {
+                            x: savedPos.x ?? node.position.x,
+                            y: savedPos.y ?? node.position.y
+                        },
+                    };
+                }
+                return node;
+            });
+
+            set({
+                nodes: nodesWithLayout,
+                edges: layoutedEdges,
+                isLoading: false,
+                isDashboardDirty: false,
+            });
+
+            console.log('📊 Dashboard loaded:', dashboard.name);
+            useToastStore.getState().addToast('success', `Dashboard "${dashboard.name}" loaded`);
+        } catch (error) {
+            console.error('❌ Failed to load dashboard:', error);
+            set({ isLoading: false });
+            useToastStore.getState().addToast('error', 'Failed to load dashboard');
+        }
+    },
+
+    saveDashboard: async () => {
+        const { activeDashboardId, dashboardName, cypherQuery, nodes } = get();
+
+        // Build layout object from current node positions
+        const layout: { nodes: Record<string, { x: number; y: number }> } = { nodes: {} };
+        for (const node of nodes) {
+            layout.nodes[node.id] = {
+                x: node.position.x,
+                y: node.position.y,
+            };
+        }
+
+        set({ isSyncing: true });
+
+        try {
+            const newId = await neo4jSaveDashboard(
+                activeDashboardId,
+                dashboardName,
+                cypherQuery,
+                JSON.stringify(layout)
+            );
+
+            set({
+                activeDashboardId: newId,
+                isDashboardDirty: false,
+                isSyncing: false,
+            });
+
+            console.log('💾 Dashboard saved:', dashboardName);
+            useToastStore.getState().addToast('success', `Dashboard "${dashboardName}" saved`);
+        } catch (error) {
+            console.error('❌ Failed to save dashboard:', error);
+            set({ isSyncing: false });
+            useToastStore.getState().addToast('error', 'Failed to save dashboard');
+        }
     },
 }));

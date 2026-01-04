@@ -137,22 +137,33 @@ const styles: Record<string, React.CSSProperties> = {
 
 export function QueryPanel() {
     const [isCollapsed, setIsCollapsed] = useState(false);
-    const [cypherQuery, setCypherQuery] = useState('MATCH (n)\nOPTIONAL MATCH (n)-[r]-()\nRETURN n, r');
+    const [localQuery, setLocalQuery] = useState('');
 
-    const { isLoading, queryError, executeNeo4jQuery, clearCanvas, clearQueryError, isNeo4jConnected, isSyncing, checkNeo4jConnection } =
-        useGraphStore(
-            useShallow((state) => ({
-                isLoading: state.isLoading,
-                queryError: state.queryError,
-                executeNeo4jQuery: state.executeNeo4jQuery,
-                clearCanvas: state.clearCanvas,
-                clearQueryError: state.clearQueryError,
-                // V8: Sync state
-                isNeo4jConnected: state.isNeo4jConnected,
-                isSyncing: state.isSyncing,
-                checkNeo4jConnection: state.checkNeo4jConnection,
-            }))
-        );
+    const {
+        isLoading, queryError, executeNeo4jQuery, clearCanvas, clearQueryError,
+        isNeo4jConnected, isSyncing, checkNeo4jConnection,
+        cypherQuery: storeCypherQuery, setCypherQuery
+    } = useGraphStore(
+        useShallow((state) => ({
+            isLoading: state.isLoading,
+            queryError: state.queryError,
+            executeNeo4jQuery: state.executeNeo4jQuery,
+            clearCanvas: state.clearCanvas,
+            clearQueryError: state.clearQueryError,
+            // V8: Sync state
+            isNeo4jConnected: state.isNeo4jConnected,
+            isSyncing: state.isSyncing,
+            checkNeo4jConnection: state.checkNeo4jConnection,
+            // V15: Dashboard query sync
+            cypherQuery: state.cypherQuery,
+            setCypherQuery: state.setCypherQuery,
+        }))
+    );
+
+    // V15: Sync local query with store (for dashboard loading)
+    useEffect(() => {
+        setLocalQuery(storeCypherQuery);
+    }, [storeCypherQuery]);
 
     // V8: Check connection on mount and periodically
     useEffect(() => {
@@ -162,9 +173,10 @@ export function QueryPanel() {
     }, [checkNeo4jConnection]);
 
     const handleRun = useCallback(() => {
-        if (!cypherQuery.trim() || isLoading) return;
-        executeNeo4jQuery(cypherQuery);
-    }, [cypherQuery, isLoading, executeNeo4jQuery]);
+        if (!localQuery.trim() || isLoading) return;
+        setCypherQuery(localQuery); // Sync to store before running
+        executeNeo4jQuery(localQuery);
+    }, [localQuery, isLoading, executeNeo4jQuery, setCypherQuery]);
 
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -214,8 +226,8 @@ export function QueryPanel() {
                             ...styles.textarea,
                             color: '#D4D4D4', // Light text for dark bg
                         }}
-                        value={cypherQuery}
-                        onChange={(e) => setCypherQuery(e.target.value)}
+                        value={localQuery}
+                        onChange={(e) => setLocalQuery(e.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder="MATCH (n)-[r]->(m) RETURN n, r, m"
                         spellCheck={false}

@@ -1,0 +1,85 @@
+/* ============================================================
+   V10: Canvas Hint (Empty State) Styles
+   ============================================================ */
+
+.canvas-hint {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+
+.canvas-hint__content {
+    text-align: center;
+    padding: 40px 60px;
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(12px);
+    border-radius: 16px;
+    border: 1px solid var(--color-border-default);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+    animation: hintFadeIn 0.4s ease;
+}
+
+.canvas-hint__icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+}
+
+.canvas-hint__title {
+    margin: 0 0 8px;
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--color-text-primary);
+}
+
+.canvas-hint__text {
+    margin: 0 0 20px;
+    font-size: 15px;
+    color: var(--color-text-secondary);
+}
+
+.canvas-hint__shortcuts {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+}
+
+.canvas-hint__shortcut {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--color-text-secondary);
+}
+
+/* V13: Icon alignment fix */
+.canvas-hint__icon {
+    display: inline-flex;
+    align-items: center;
+    vertical-align: middle;
+}
+
+.canvas-hint__shortcut kbd {
+    padding: 4px 8px;
+    font-size: 12px;
+    font-family: 'Fira Code', monospace;
+    background: var(--color-bg-muted);
+    border: 1px solid var(--color-border-default);
+    border-radius: 4px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+@keyframes hintFadeIn {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}

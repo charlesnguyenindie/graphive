@@ -1,0 +1,256 @@
+.node-base {
+  background: var(--node-bg);
+  border: 2px solid var(--border-default);
+  box-shadow: var(--shadow-node);
+  font-family: var(--font-family);
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
+  transition: all 0.2s ease-in-out;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.node-base.selected {
+  border-color: var(--border-selected);
+  box-shadow: var(--shadow-node-selected);
+}
+
+/* Rectangle Node */
+.rectangle-node {
+  min-width: 150px;
+  min-height: 60px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+}
+
+/* Circle Node */
+.circle-node {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  padding: 8px;
+  text-align: center;
+  word-wrap: break-word;
+}
+
+/* Node Label */
+.node-label {
+  font-weight: 500;
+  text-align: center;
+  user-select: none;
+  cursor: text;
+}
+
+/* ========================================
+   V3: MAGNETIC HANDLES - Miro-style
+   ======================================== */
+
+/* Handles invisible by default */
+.node-base .react-flow__handle {
+  opacity: 0;
+  transition: all 0.2s ease;
+}
+
+/* Collapse button invisible by default */
+.node-base .collapse-button {
+  opacity: 0;
+  transition: opacity 0.2s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+/* On node hover or selected, reveal handles as BLUE */
+.node-base:hover .react-flow__handle,
+.node-base.selected .react-flow__handle {
+  opacity: 1;
+  background: #3b82f6;
+  /* Blue for selected/hover */
+}
+
+/* V3: When connecting (dragging a line), show ALL handles as GREEN snap targets */
+.is-connecting .node-base .react-flow__handle {
+  opacity: 1;
+  background: #22c55e;
+  /* Green for snap targets */
+  transform: scale(1.1);
+}
+
+/* Don't show green on the source node being dragged from */
+.is-connecting .node-base.selected .react-flow__handle {
+  background: #3b82f6;
+  /* Keep blue on source node */
+  transform: scale(1);
+}
+
+.node-base:hover .collapse-button,
+.node-base.selected .collapse-button {
+  opacity: 1;
+}
+
+/* Handle hover grow effect */
+.node-base .react-flow__handle:hover {
+  transform: scale(1.3);
+}
+
+/* ========================================
+   V3: HANDLE POSITIONING - Outside border
+   ======================================== */
+
+/* Base handle styles */
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  background: var(--primary);
+  border: 2px solid white;
+  z-index: 5;
+  transition: all 0.2s ease;
+}
+
+/* Top handle - outside border */
+.react-flow__handle[data-handlepos="top"] {
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Bottom handle - outside border */
+.react-flow__handle[data-handlepos="bottom"] {
+  bottom: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Left handle - outside border */
+.react-flow__handle[data-handlepos="left"] {
+  left: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* Right handle - outside border */
+.react-flow__handle[data-handlepos="right"] {
+  right: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* ========================================
+   COLLAPSE BUTTON
+   ======================================== */
+
+.collapse-button {
+  position: absolute;
+  bottom: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--node-bg);
+  border: 2px solid var(--border-default);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.collapse-button:hover {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: white;
+}
+
+.collapse-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ========================================
+   INLINE EDITING
+   ======================================== */
+
+.node-edit-input {
+  font-family: var(--font-family);
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--primary);
+  outline: none;
+  text-align: center;
+  padding: 2px 4px;
+  min-width: 60px;
+  max-width: 200px;
+}
+
+.node-edit-input:focus {
+  border-bottom-color: var(--primary-hover);
+}
+
+/* Circle node edit input - smaller */
+.circle-edit-input {
+  font-size: var(--font-size-sm);
+  max-width: 80px;
+}
+
+/* ========================================
+   HIGHLIGHT ANIMATION (Search)
+   ======================================== */
+
+@keyframes node-flash {
+
+  0%,
+  100% {
+    box-shadow: var(--shadow-node-selected);
+  }
+
+  25%,
+  75% {
+    box-shadow: 0 0 0 8px rgba(38, 128, 235, 0.4), 0 0 20px rgba(38, 128, 235, 0.3);
+  }
+
+  50% {
+    box-shadow: 0 0 0 12px rgba(38, 128, 235, 0.3), 0 0 30px rgba(38, 128, 235, 0.2);
+  }
+}
+
+.node-base.highlighted {
+  animation: node-flash 0.6s ease-in-out 3;
+  border-color: var(--primary);
+  z-index: 1000;
+}
+
+/* Ensure handles are visible when highlighted */
+.node-base.highlighted .react-flow__handle,
+.node-base.highlighted .collapse-button {
+  opacity: 1;
+}
+
+/* ========================================
+   V2: NODE RESIZER
+   ======================================== */
+
+/* V4: Resizer Line - 2px solid black, overlay on border */
+.node-resizer-line {
+  border-color: #000 !important;
+  border-width: 2px !important;
+  /* Adjust offset if needed to overlay exactly, usually 0 is fine with box-sizing */
+}
+
+/* V4: Resizer Handles - match 2px feel */
+.node-resizer-handle {
+  width: 10px !important;
+  height: 10px !important;
+  background: white !important;
+  border: 2px solid #000 !important;
+  border-radius: 2px !important;
+}
+
+.node-resizer-handle:hover {
+  background: #f0f0f0 !important;
+  border-color: #000 !important;
+  transform: scale(1.2);
+}

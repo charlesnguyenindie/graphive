@@ -1,0 +1,120 @@
+/* Smart Edge Styles */
+
+/* V4 Fix: Target both the edge group and path directly */
+.smart-edge {
+    stroke: #9CA3AF;
+    /* Darker gray fallback for visibility */
+    stroke-width: 2;
+    transition: stroke 0.15s ease, stroke-width 0.15s ease;
+}
+
+/* Ensure the path inside is styled */
+.react-flow__edge.smart-edge path,
+.react-flow__edge path.smart-edge,
+path.smart-edge {
+    stroke: #9CA3AF;
+    stroke-width: 2;
+}
+
+.smart-edge.selected,
+.react-flow__edge.selected path {
+    stroke: var(--border-selected, #2680EB);
+    stroke-width: 2.5;
+}
+
+.smart-edge:hover,
+.react-flow__edge:hover path {
+    stroke: var(--primary, #2680EB);
+}
+
+/* Edge Label Container */
+.edge-label-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+/* Edge Label */
+.edge-label {
+    background: rgba(255, 255, 255, 0.95);
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-default);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+    white-space: nowrap;
+    cursor: text;
+    transition: all 0.15s ease;
+    min-height: 20px;
+}
+
+.edge-label:hover {
+    border-color: var(--primary);
+    color: var(--text-primary);
+}
+
+.edge-label-container.selected .edge-label {
+    border-color: var(--primary);
+    background: white;
+}
+
+/* Edge Flip Button */
+.edge-flip-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    background: white;
+    border: 1px solid var(--border-default);
+    border-radius: 50%;
+    cursor: pointer;
+    color: var(--text-secondary);
+    transition: all 0.15s ease;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.edge-flip-button:hover {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: white;
+    transform: scale(1.1);
+}
+
+/* Edge Edit Input */
+.edge-edit-input {
+    font-family: var(--font-family);
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    background: white;
+    border: 2px solid var(--primary);
+    border-radius: var(--radius-sm);
+    outline: none;
+    text-align: center;
+    padding: 3px 6px;
+    min-width: 60px;
+    max-width: 150px;
+}
+
+.edge-edit-input:focus {
+    border-color: var(--primary-hover);
+    box-shadow: 0 0 0 2px rgba(38, 128, 235, 0.2);
+}
+
+/* Reconnection Handle Styles */
+.react-flow__edge.updating {
+    stroke: var(--primary);
+    stroke-dasharray: 5;
+}
+
+/* V3: Edge Flip Animation */
+.smart-edge path {
+    transition: d 0.3s ease-out;
+}
+
+.edge-flip-button:active {
+    transform: scale(0.9) rotate(180deg);
+}

@@ -1,0 +1,553 @@
+import neo4j, { Driver, Session, Record as Neo4jRecord, Node as Neo4jNode, Relationship } from 'neo4j-driver';
+import { Node, Edge } from '@xyflow/react';
+import { NodeData } from '../store/useGraphStore';
+import { ConnectionConfig, Protocol, DEFAULT_PORTS } from '../config/connection';
+
+// ============================================================
+// V9: Dynamic Driver Management
+// ============================================================
+
+let driver: Driver | null = null;
+let currentConnectionKey: string | null = null;
+
+/**
+ * Check if the driver is currently initialized
+ */
+export function isDriverInitialized(): boolean {
+    return driver !== null;
+}
+
+/**
+ * Normalize port - use default if empty or missing
+ */
+function normalizePort(port: string | undefined, protocol: Protocol): string {
+    if (port && port.trim() !== '') {
+        return port.trim();
+    }
+    return DEFAULT_PORTS[protocol];
+}
+
+/**
+ * Build connection URI from config
+ */
+function buildConnectionUri(config: ConnectionConfig): string {
+    const normalizedPort = normalizePort(config.port, config.protocol);
+    return `${config.protocol}://${config.host}:${normalizedPort}`;
+}
+
+/**
+ * Generate a unique key for a connection config (for cache invalidation)
+ */
+function getConnectionKey(config: ConnectionConfig): string {
+    return `${config.protocol}://${config.host}:${config.port}/${config.username}`;
+}
+
+/**
+ * Initialize or get the Neo4j driver with dynamic configuration
+ */
+export function initializeDriver(config: ConnectionConfig): Driver {
+    const newKey = getConnectionKey(config);
+
+    // If same connection, reuse existing driver
+    if (driver && currentConnectionKey === newKey) {
+        return driver;
+    }
+
+    // Close existing driver if different connection
+    if (driver) {
+        driver.close().catch(console.error);
+    }
+
+    const uri = buildConnectionUri(config);
+    driver = neo4j.driver(uri, neo4j.auth.basic(config.username, config.password));
+    currentConnectionKey = newKey;
+
+    console.log('🔌 Neo4j driver initialized:', uri);
+    return driver;
+}
+
+/**
+ * Get the current driver instance
+ * Throws if not initialized
+ */
+export function getDriver(): Driver {
+    if (!driver) {
+        throw new Error('Neo4j driver not initialized. Please connect first.');
+    }
+    return driver;
+}
+
+/**
+ * Test connection with provided credentials
+ * Returns true if successful, or a human-friendly error message if failed
+ */
+export async function testConnection(config: ConnectionConfig): Promise<true | string> {
+    let testDriver: Driver | null = null;
+    let testSession: Session | null = null;
+
+    try {
+        const uri = buildConnectionUri(config);
+        console.log('🔍 Testing connection to:', uri);
+
+        testDriver = neo4j.driver(uri, neo4j.auth.basic(config.username, config.password));
+        testSession = testDriver.session();
+
+        // Run a simple query to verify connectivity and authentication
+        await testSession.run('RETURN 1');
+
+        console.log('✅ Connection test successful');
+
+        // If test passed, initialize the main driver
+        initializeDriver(config);
+
+        return true;
+    } catch (error) {
+        console.error('❌ Connection test failed:', error);
+
+        // Map Neo4j errors to human-friendly messages
+        if (error instanceof Error) {
+            const message = error.message.toLowerCase();
+
+            if (message.includes('unauthorized') || message.includes('authentication')) {
+                return 'Incorrect username or password';
+            }
+            if (message.includes('serviceunavailable') || message.includes('connection refused')) {
+                return 'Server unreachable. Check the host and port.';
+            }
+            if (message.includes('dns') || message.includes('getaddrinfo')) {
+                return 'Host not found. Check the server address.';
+            }
+            if (message.includes('certificate') || message.includes('ssl') || message.includes('tls')) {
+                return 'SSL/TLS error. Try a different protocol (e.g., bolt+s or neo4j+s).';
+            }
+            if (message.includes('timeout')) {
+                return 'Connection timed out. Server may be slow or unreachable.';
+            }
+
+            return error.message;
+        }
+
+        return 'Unknown connection error';
+    } finally {
+        if (testSession) {
+            await testSession.close().catch(() => { });
+        }
+        if (testDriver && testDriver !== driver) {
+            await testDriver.close().catch(() => { });
+        }
+    }
+}
+
+/**
+ * Close the Neo4j driver connection
+ */
+export async function closeDriver(): Promise<void> {
+    if (driver) {
+        console.log('🔌 Closing Neo4j driver');
+        await driver.close();
+        driver = null;
+        currentConnectionKey = null;
+    }
+}
+
+/**
+ * Transform Neo4j records into React Flow nodes and edges
+ */
+export function transformNeo4jData(records: Neo4jRecord[]): { nodes: Node<NodeData>[]; edges: Edge[] } {
+    const nodesMap = new Map<string, Node<NodeData>>();
+    const edgesMap = new Map<string, Edge>();
+    const internalToResolvedIdMap = new Map<string, string>();
+
+    // Pass 1: Process Nodes to build ID map
+    for (const record of records) {
+        for (const key of record.keys) {
+            const value = record.get(key);
+
+            if (isNeo4jNode(value)) {
+                // INTERNAL ID (for relationship mapping)
+                const internalKey = value.elementId || value.identity.toString();
+
+                // PROPERTIES
+                const props = value.properties;
+
+                // RESOLVED ID: Use property 'id' if available (creation consistency), else fallback to internal
+                const resolvedId = props.id != null ? String(props.id) : internalKey;
+
+                internalToResolvedIdMap.set(internalKey, resolvedId);
+
+                if (!nodesMap.has(resolvedId)) {
+                    nodesMap.set(resolvedId, {
+                        id: resolvedId,
+                        type: 'rectangle',
+                        position: { x: 0, y: 0 }, // Will be set by layout
+                        data: {
+                            label: getNodeLabel(value),
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    // Pass 2: Process Relationships using resolved IDs
+    for (const record of records) {
+        for (const key of record.keys) {
+            const value = record.get(key);
+
+            if (isNeo4jRelationship(value)) {
+                // INTERNAL ID
+                const internalKey = value.elementId || value.identity.toString();
+                const props = value.properties;
+                const resolvedId = props.id != null ? String(props.id) : internalKey;
+
+                if (!edgesMap.has(resolvedId)) {
+                    // Resolve Source/Target using the map from Pass 1
+                    const sourceInternal = value.startNodeElementId || value.start.toString();
+                    const targetInternal = value.endNodeElementId || value.end.toString();
+
+                    const sourceId = internalToResolvedIdMap.get(sourceInternal) || sourceInternal;
+                    const targetId = internalToResolvedIdMap.get(targetInternal) || targetInternal;
+
+                    edgesMap.set(resolvedId, {
+                        id: resolvedId,
+                        source: sourceId,
+                        target: targetId,
+                        // V6: Fix "Ugly" Edge - Enforce Bottom -> Top flow
+                        sourceHandle: 'bottom-h',
+                        targetHandle: 'top-h',
+                        type: 'custom',
+                        data: {
+                            // Property 'label' takes precedence (for editable labels), fallback to relationship type
+                            label: props.label || value.type,
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    return {
+        nodes: Array.from(nodesMap.values()),
+        edges: Array.from(edgesMap.values()),
+    };
+}
+
+/**
+ * Type guard for Neo4j Node
+ */
+function isNeo4jNode(value: unknown): value is Neo4jNode {
+    return (
+        value !== null &&
+        typeof value === 'object' &&
+        'labels' in value &&
+        'properties' in value &&
+        ('identity' in value || 'elementId' in value)
+    );
+}
+
+/**
+ * Type guard for Neo4j Relationship
+ */
+function isNeo4jRelationship(value: unknown): value is Relationship {
+    return (
+        value !== null &&
+        typeof value === 'object' &&
+        'type' in value &&
+        'properties' in value &&
+        ('start' in value || 'startNodeElementId' in value)
+    );
+}
+
+/**
+ * Extract a display label from a Neo4j node
+ */
+function getNodeLabel(node: Neo4jNode): string {
+    const props = node.properties;
+
+    // Try common label properties
+    if (props.name) return String(props.name);
+    if (props.title) return String(props.title);
+    if (props.label) return String(props.label);
+    if (props.id) return String(props.id);
+
+    // Fall back to first label or generic
+    if (node.labels.length > 0) {
+        return `${node.labels[0]}`;
+    }
+
+    return 'Node';
+}
+
+/**
+ * Execute a Cypher query and return transformed React Flow elements
+ */
+export async function executeQuery(
+    cypherQuery: string
+): Promise<{ nodes: Node<NodeData>[]; edges: Edge[] }> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+
+    try {
+        const result = await session.run(cypherQuery);
+        return transformNeo4jData(result.records);
+    } finally {
+        await session.close();
+    }
+}
+
+// ============================================================
+// V8: Real-Time Sync Bridge - Generic Query Runner
+// ============================================================
+
+/**
+ * Generic query runner for CRUD operations
+ * Handles transaction pooling and error logging
+ */
+export async function runQuery<T = unknown>(
+    cypher: string,
+    params: Record<string, unknown> = {}
+): Promise<T | null> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+
+    try {
+        console.log('🔄 Neo4j runQuery:', { cypher, params });
+        const result = await session.run(cypher, params);
+        console.log('✅ Neo4j query success:', result.summary.counters);
+        return result as T;
+    } catch (error) {
+        console.error('❌ Neo4j query failed:', error);
+        throw error;
+    } finally {
+        await session.close();
+    }
+}
+
+/**
+ * Check if Neo4j connection is alive
+ */
+export async function checkConnection(): Promise<boolean> {
+    try {
+        const drv = getDriver();
+        await drv.verifyConnectivity();
+        console.log('✅ Neo4j connection verified');
+        return true;
+    } catch (error) {
+        console.error('❌ Neo4j connection failed:', error);
+        return false;
+    }
+}
+
+// ============================================================
+// V8: CRUD Operations for Nodes
+// ============================================================
+
+/**
+ * Create a node in Neo4j
+ */
+export async function createNode(id: string, name: string): Promise<void> {
+    await runQuery(
+        'CREATE (n:Concept {id: $id, name: $name})',
+        { id, name }
+    );
+}
+
+/**
+ * Update a node's name in Neo4j
+ */
+export async function updateNodeName(id: string, newName: string): Promise<void> {
+    await runQuery(
+        'MATCH (n {id: $id}) SET n.name = $newName',
+        { id, newName }
+    );
+}
+
+/**
+ * Delete a node from Neo4j (DETACH removes edges first)
+ */
+export async function deleteNode(id: string): Promise<void> {
+    await runQuery(
+        'MATCH (n {id: $id}) DETACH DELETE n',
+        { id }
+    );
+}
+
+// ============================================================
+// V8: CRUD Operations for Edges
+// ============================================================
+
+/**
+ * Create an edge in Neo4j
+ */
+export async function createEdge(
+    edgeId: string,
+    sourceId: string,
+    targetId: string,
+    label: string = 'LINK'
+): Promise<void> {
+    await runQuery(
+        `MATCH (a {id: $sID}), (b {id: $tID}) 
+         CREATE (a)-[r:${label} {id: $rID}]->(b)`,
+        { sID: sourceId, tID: targetId, rID: edgeId }
+    );
+}
+
+/**
+ * Update an edge's label in Neo4j
+ */
+export async function updateEdgeLabel(edgeId: string, newLabel: string): Promise<void> {
+    await runQuery(
+        'MATCH ()-[r {id: $rID}]->() SET r.label = $newLabel',
+        { rID: edgeId, newLabel }
+    );
+}
+
+/**
+ * Delete an edge from Neo4j
+ */
+export async function deleteEdge(edgeId: string): Promise<void> {
+    await runQuery(
+        'MATCH ()-[r {id: $rID}]->() DELETE r',
+        { rID: edgeId }
+    );
+}
+
+// ============================================================
+// V10: Relationship Reversal (Transactional)
+// ============================================================
+
+/**
+ * Reverse the direction of a relationship in Neo4j.
+ * This is a transactional operation: DELETE old edge, CREATE new reversed edge.
+ * All properties are preserved, including the original ID.
+ * 
+ * @returns The new source and target IDs (swapped)
+ */
+export async function reverseRelationship(edgeId: string): Promise<{ newSource: string; newTarget: string }> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+
+    try {
+        console.log('🔄 Reversing relationship:', edgeId);
+
+        // Use a transaction to ensure atomicity
+        const result = await session.executeWrite(async (tx) => {
+            // Step 1: Find the relationship and its nodes
+            const matchResult = await tx.run(
+                `MATCH (a)-[r {id: $id}]->(b)
+                 RETURN a.id AS sourceId, b.id AS targetId, type(r) AS relType, properties(r) AS props`,
+                { id: edgeId }
+            );
+
+            if (matchResult.records.length === 0) {
+                throw new Error(`Relationship with id ${edgeId} not found`);
+            }
+
+            const record = matchResult.records[0];
+            const sourceId = record.get('sourceId');
+            const targetId = record.get('targetId');
+            const relType = record.get('relType');
+            const props = record.get('props');
+
+            // Step 2: Delete the old relationship
+            await tx.run(
+                'MATCH ()-[r {id: $id}]->() DELETE r',
+                { id: edgeId }
+            );
+
+            // Step 3: Create the reversed relationship with same properties
+            // Note: We swap a and b (targetId becomes new source, sourceId becomes new target)
+            await tx.run(
+                `MATCH (a {id: $newSourceId}), (b {id: $newTargetId})
+                 CREATE (a)-[r:${relType} $props]->(b)`,
+                {
+                    newSourceId: targetId,  // Original target is now source
+                    newTargetId: sourceId,  // Original source is now target
+                    props: props
+                }
+            );
+
+            console.log('✅ Relationship reversed:', {
+                oldDirection: `${sourceId} -> ${targetId}`,
+                newDirection: `${targetId} -> ${sourceId}`
+            });
+
+            return { newSource: targetId, newTarget: sourceId };
+        });
+
+        return result;
+    } catch (error) {
+        console.error('❌ Failed to reverse relationship:', error);
+        throw error;
+    } finally {
+        await session.close();
+    }
+}
+
+/**
+ * V13: Migrate a relationship to new source/target nodes.
+ * This is a transactional operation: DELETE old edge, CREATE new edge between new nodes.
+ * All properties are preserved, including the original ID.
+ * 
+ * @param edgeId - The ID of the edge to migrate
+ * @param newSourceId - The new source node ID
+ * @param newTargetId - The new target node ID
+ * @returns Success status
+ */
+export async function migrateRelationship(
+    edgeId: string,
+    newSourceId: string,
+    newTargetId: string
+): Promise<void> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+
+    try {
+        console.log('🔀 Migrating relationship:', { edgeId, newSourceId, newTargetId });
+
+        await session.executeWrite(async (tx) => {
+            // Step 1: Find the relationship and its properties
+            const matchResult = await tx.run(
+                `MATCH ()-[r {id: $id}]->()
+                 RETURN type(r) AS relType, properties(r) AS props`,
+                { id: edgeId }
+            );
+
+            if (matchResult.records.length === 0) {
+                throw new Error(`Relationship with id ${edgeId} not found`);
+            }
+
+            const record = matchResult.records[0];
+            const relType = record.get('relType');
+            const props = record.get('props');
+
+            // Step 2: Delete the old relationship
+            await tx.run(
+                'MATCH ()-[r {id: $id}]->() DELETE r',
+                { id: edgeId }
+            );
+
+            // Step 3: Create new relationship between new nodes with same properties
+            await tx.run(
+                `MATCH (a {id: $newSourceId}), (b {id: $newTargetId})
+                 CREATE (a)-[r:${relType} $props]->(b)`,
+                {
+                    newSourceId,
+                    newTargetId,
+                    props
+                }
+            );
+
+            console.log('✅ Relationship migrated:', {
+                edgeId,
+                from: `${newSourceId} -> ${newTargetId}`,
+                type: relType
+            });
+        });
+    } catch (error) {
+        console.error('❌ Failed to migrate relationship:', error);
+        throw error;
+    } finally {
+        await session.close();
+    }
+}

@@ -1,0 +1,62 @@
+/* Toolbar Styles */
+
+.toolbar {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 12px;
+    background: var(--node-bg);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-panel);
+    border: 1px solid var(--border-default);
+    z-index: 10;
+}
+
+.toolbar-button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-md);
+    font-family: var(--font-family);
+    font-size: var(--font-size-md);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+}
+
+.toolbar-button:hover:not(:disabled) {
+    background: var(--canvas-bg);
+}
+
+.toolbar-button:active:not(:disabled) {
+    background: var(--border-default);
+}
+
+.toolbar-button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.toolbar-button.danger:hover:not(:disabled) {
+    background: rgba(242, 78, 30, 0.1);
+    color: var(--danger);
+}
+
+.toolbar-button svg {
+    flex-shrink: 0;
+}
+
+.toolbar-divider {
+    width: 1px;
+    height: 24px;
+    background: var(--border-default);
+    margin: 0 8px;
+}

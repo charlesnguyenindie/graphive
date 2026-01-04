@@ -50,8 +50,7 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
     // V10: Get fitView from React Flow
     const { fitView } = useReactFlow();
 
-    // V2: Use useShallow to prevent re-renders on unrelated state changes
-    const { nodes, edges, onNodesChange, onEdgesChange, onConnect, onReconnect, deleteSelected, activeDashboardId } =
+    const { nodes, edges, onNodesChange, onEdgesChange, onConnect, onReconnect, deleteSelected, activeDashboardId, initializeGraph } =
         useGraphStore(
             useShallow((state) => ({
                 nodes: state.nodes,
@@ -62,8 +61,14 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
                 onReconnect: state.onReconnect,
                 deleteSelected: state.deleteSelected,
                 activeDashboardId: state.activeDashboardId,
+                initializeGraph: state.initializeGraph,
             }))
         );
+
+    // V15.1: Initialize graph (Auto-load)
+    useEffect(() => {
+        initializeGraph();
+    }, [initializeGraph]);
 
     // V10: Dynamic minZoom based on node count
     const dynamicMinZoom = useMemo(() => {

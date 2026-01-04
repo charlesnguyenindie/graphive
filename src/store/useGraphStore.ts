@@ -38,6 +38,8 @@ import {
     getDashboard as neo4jGetDashboard,
     saveDashboard as neo4jSaveDashboard,
     deleteDashboard as neo4jDeleteDashboard,
+    saveDashboardsOrder as neo4jSaveDashboardsOrder,
+    renameDashboard as neo4jRenameDashboard,
     DashboardMeta,
 } from '../services/neo4jService';
 import { getLayoutedElements } from '../services/layoutService';
@@ -114,6 +116,12 @@ interface GraphState {
     setDashboardName: (name: string) => void;
     setCypherQuery: (query: string) => void;
     cypherQuery: string;
+    // Internal flag to suppress dirty checks during load
+    isRestoring: boolean;
+    initializeGraph: () => Promise<void>;
+    createDashboardAsCopy: (name: string) => Promise<void>;
+    reorderDashboards: (ids: string[]) => Promise<void>;
+    renameDashboard: (id: string, name: string) => Promise<void>;
 }
 
 // Helper: Get all descendant node IDs recursively
@@ -159,27 +167,38 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     dashboardName: 'Untitled',
     isDashboardDirty: false,
     cypherQuery: 'MATCH (n)\nOPTIONAL MATCH (n)-[r]-()\nRETURN n, r',
+    isRestoring: false,
 
     onNodesChange: (changes) => {
-        // V15: Detect position changes for dirty tracking
-        const hasPositionChange = changes.some(
-            (c) => c.type === 'position' && c.position
+        // V15: Detect position or dimension changes for dirty tracking
+        const hasLayoutChange = changes.some(
+            (c) => (c.type === 'position' && c.position) || c.type === 'dimensions'
         );
 
         const newNodes = applyNodeChanges(changes, get().nodes);
 
         set({
             nodes: newNodes,
-            // Mark dirty if position changed
-            ...(hasPositionChange ? { isDashboardDirty: true } : {}),
+            // Mark dirty if layout changed AND not restoring
+            ...((hasLayoutChange && !get().isRestoring) ? { isDashboardDirty: true } : {}),
         });
 
-        // V15: Auto-save to LocalStorage on position changes (debounced)
-        if (hasPositionChange) {
+        // V15: Auto-save to LocalStorage on layout changes (debounced)
+        if (hasLayoutChange && !get().isRestoring) {
             const { dashboardName, cypherQuery, activeDashboardId } = get();
-            const layout: Record<string, { x: number; y: number }> = {};
+            const layout: Record<string, { x: number; y: number; w?: number; h?: number }> = {};
+
             for (const node of newNodes) {
-                layout[node.id] = { x: node.position.x, y: node.position.y };
+                // Get dimensions
+                const w = node.measured?.width ?? node.width ?? (typeof node.style?.width === 'number' ? node.style.width : undefined);
+                const h = node.measured?.height ?? node.height ?? (typeof node.style?.height === 'number' ? node.style.height : undefined);
+
+                layout[node.id] = {
+                    x: node.position.x,
+                    y: node.position.y,
+                    w,
+                    h
+                };
             }
 
             try {
@@ -937,7 +956,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     },
 
     loadDashboard: async (id) => {
-        set({ isLoading: true });
+        set({ isRestoring: true, isLoading: true });
 
         try {
             const dashboard = await neo4jGetDashboard(id);
@@ -969,15 +988,23 @@ export const useGraphStore = create<GraphState>((set, get) => ({
                 result.edges
             );
 
-            // Apply saved positions from layout
+            // Apply saved positions and dimensions from layout
             const nodesWithLayout = layoutedNodes.map(node => {
-                const savedPos = layout[node.id];
-                if (savedPos) {
+                const saved = layout[node.id];
+                if (saved) {
                     return {
                         ...node,
                         position: {
-                            x: savedPos.x ?? node.position.x,
-                            y: savedPos.y ?? node.position.y
+                            x: saved.x ?? node.position.x,
+                            y: saved.y ?? node.position.y
+                        },
+                        // V15 Fix: Restore dimensions
+                        width: saved.w,
+                        height: saved.h,
+                        style: {
+                            ...node.style,
+                            width: saved.w,
+                            height: saved.h,
                         },
                     };
                 }
@@ -989,7 +1016,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
                 edges: layoutedEdges,
                 isLoading: false,
                 isDashboardDirty: false,
+                // Keep isRestoring true slightly longer to ignore initial measurement events
+                isRestoring: true,
             });
+
+            setTimeout(() => {
+                set({ isRestoring: false });
+            }, 500);
 
             console.log('📊 Dashboard loaded:', dashboard.name);
             useToastStore.getState().addToast('success', `Dashboard "${dashboard.name}" loaded`);
@@ -1003,12 +1036,18 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     saveDashboard: async () => {
         const { activeDashboardId, dashboardName, cypherQuery, nodes } = get();
 
-        // Build layout object from current node positions
-        const layout: { nodes: Record<string, { x: number; y: number }> } = { nodes: {} };
+        // Build layout object from current node positions and dimensions
+        const layout: { nodes: Record<string, { x: number; y: number; w?: number; h?: number }> } = { nodes: {} };
         for (const node of nodes) {
+            // Get dimensions from measured (actual rendered size) or style/props
+            const w = node.measured?.width ?? node.width ?? (typeof node.style?.width === 'number' ? node.style.width : undefined);
+            const h = node.measured?.height ?? node.height ?? (typeof node.style?.height === 'number' ? node.style.height : undefined);
+
             layout.nodes[node.id] = {
                 x: node.position.x,
                 y: node.position.y,
+                w,
+                h,
             };
         }
 
@@ -1024,6 +1063,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
             set({
                 activeDashboardId: newId,
+                dashboardName: dashboardName, // Explicitly set name to ensure sync
                 isDashboardDirty: false,
                 isSyncing: false,
             });
@@ -1035,5 +1075,181 @@ export const useGraphStore = create<GraphState>((set, get) => ({
             set({ isSyncing: false });
             useToastStore.getState().addToast('error', 'Failed to save dashboard');
         }
+    },
+
+    createDashboardAsCopy: async (name: string) => {
+        const { cypherQuery, nodes } = get();
+
+        // Build layout
+        const layout: { nodes: Record<string, { x: number; y: number; w?: number; h?: number }> } = { nodes: {} };
+        for (const node of nodes) {
+            const w = node.measured?.width ?? node.width ?? (typeof node.style?.width === 'number' ? node.style.width : undefined);
+            const h = node.measured?.height ?? node.height ?? (typeof node.style?.height === 'number' ? node.style.height : undefined);
+            layout.nodes[node.id] = { x: node.position.x, y: node.position.y, w, h };
+        }
+
+        set({ isSyncing: true });
+
+        try {
+            // Save as new (null ID)
+            const newId = await neo4jSaveDashboard(null, name, cypherQuery, JSON.stringify(layout));
+
+            set({
+                activeDashboardId: newId,
+                dashboardName: name,
+                isDashboardDirty: false,
+                isSyncing: false,
+                isRestoring: true // Prevent dirty flag from immediate render
+            });
+
+            setTimeout(() => set({ isRestoring: false }), 500);
+
+            console.log('📋 Dashboard copied:', name);
+            useToastStore.getState().addToast('success', 'Created new dashboard');
+        } catch (error) {
+            console.error('❌ Failed to create copy:', error);
+            set({ isSyncing: false });
+            useToastStore.getState().addToast('error', 'Failed to create dashboard');
+        }
+    },
+
+    reorderDashboards: async (ids: string[]) => {
+        // Optimistic update handled by UI/Parent, store just syncs
+        try {
+            await neo4jSaveDashboardsOrder(ids);
+            console.log('🔢 Dashboard order saved');
+        } catch (error) {
+            console.error('❌ Failed to save order:', error);
+            useToastStore.getState().addToast('error', 'Failed to save order');
+        }
+    },
+
+    renameDashboard: async (id: string, name: string) => {
+        try {
+            await neo4jRenameDashboard(id, name);
+
+            // If renaming active dashboard, update local state
+            const currentActive = get().activeDashboardId;
+            console.log('Renaming:', id, 'Active:', currentActive, 'Match:', currentActive === id);
+
+            if (currentActive === id) {
+                set({ dashboardName: name });
+
+                // V15.1 Fix: Update LocalStorage session immediately with new name
+                try {
+                    const { cypherQuery, nodes } = get();
+                    const layout: Record<string, { x: number; y: number; w?: number; h?: number }> = {};
+                    for (const node of nodes) {
+                        const w = node.measured?.width ?? node.width ?? (typeof node.style?.width === 'number' ? node.style.width : undefined);
+                        const h = node.measured?.height ?? node.height ?? (typeof node.style?.height === 'number' ? node.style.height : undefined);
+                        layout[node.id] = { x: node.position.x, y: node.position.y, w, h };
+                    }
+
+                    localStorage.setItem('graphive_session', JSON.stringify({
+                        activeDashboardId: id,
+                        dashboardName: name,
+                        cypherQuery,
+                        layout,
+                        savedAt: new Date().toISOString(),
+                    }));
+                } catch (e) {
+                    console.warn('Failed to update session on rename:', e);
+                }
+            }
+
+            useToastStore.getState().addToast('success', 'Dashboard renamed');
+        } catch (error) {
+            console.error('❌ Failed to rename dashboard:', error);
+            useToastStore.getState().addToast('error', 'Failed to rename dashboard');
+        }
+    },
+
+    initializeGraph: async () => {
+        console.log('🚀 initializeGraph called, nodes:', get().nodes.length);
+        if (get().nodes.length > 0) {
+            console.log('Already has content, skipping');
+            return;
+        }
+
+        set({ isRestoring: true, isLoading: true });
+
+        // Priority 1: Check Neo4j for saved dashboards
+        console.log('📊 Checking Neo4j for saved dashboards...');
+        try {
+            const list = await neo4jGetDashboards();
+            console.log('Found', list.length, 'dashboards');
+
+            if (list.length > 0) {
+                // Load the first dashboard (by order)
+                console.log('Loading first dashboard:', list[0].id, list[0].name);
+
+                // Clear stale LocalStorage since we're loading fresh from Neo4j
+                localStorage.removeItem('graphive_session');
+
+                await get().loadDashboard(list[0].id);
+                return;
+            }
+        } catch (e) {
+            console.error('Failed to fetch dashboards from Neo4j:', e);
+        }
+
+        // Priority 2: No saved dashboards - try LocalStorage (unsaved work)
+        console.log('📦 No dashboards in Neo4j, checking LocalStorage...');
+        const savedSession = localStorage.getItem('graphive_session');
+
+        if (savedSession) {
+            try {
+                const session = JSON.parse(savedSession);
+                console.log('Session data:', {
+                    activeDashboardId: session.activeDashboardId,
+                    hasLayout: !!session.layout,
+                    dashboardName: session.dashboardName
+                });
+
+                if (session.cypherQuery && session.layout) {
+                    const { activeDashboardId, dashboardName, cypherQuery, layout } = session;
+
+                    const result = await neo4jExecuteQuery(cypherQuery);
+                    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(result.nodes, result.edges);
+
+                    const nodesWithLayout = layoutedNodes.map(node => {
+                        const saved = layout[node.id];
+                        if (saved) {
+                            return {
+                                ...node,
+                                position: {
+                                    x: saved.x ?? node.position.x,
+                                    y: saved.y ?? node.position.y
+                                },
+                                width: saved.w,
+                                height: saved.h,
+                                style: { ...node.style, width: saved.w, height: saved.h },
+                            };
+                        }
+                        return node;
+                    });
+
+                    set({
+                        activeDashboardId: activeDashboardId || null,
+                        dashboardName: dashboardName || 'Untitled',
+                        cypherQuery,
+                        nodes: nodesWithLayout,
+                        edges: layoutedEdges,
+                        isLoading: false,
+                        isDashboardDirty: true,
+                        isRestoring: false,
+                    });
+
+                    console.log('💾 Restored unsaved session from LocalStorage');
+                    return;
+                }
+            } catch (e) {
+                console.warn('Invalid LocalStorage session', e);
+            }
+        }
+
+        // Priority 3: Empty canvas
+        console.log('No dashboards or session found, showing empty canvas');
+        set({ isLoading: false, isRestoring: false });
     },
 }));

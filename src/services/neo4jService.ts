@@ -764,6 +764,7 @@ export interface DashboardMeta {
     name: string;
     query: string;
     layout: string; // JSON string
+    order?: number; // V15.1: Sort order
     createdAt?: string;
     updatedAt?: string;
 }
@@ -779,8 +780,8 @@ export async function getDashboards(): Promise<DashboardMeta[]> {
         const result = await session.run(
             `MATCH (d:_GraphiveDashboard)
              RETURN elementId(d) AS id, d.name AS name, d.query AS query, d.layout AS layout, 
-                    d.createdAt AS createdAt, d.updatedAt AS updatedAt
-             ORDER BY d.updatedAt DESC`
+                    d.createdAt AS createdAt, d.updatedAt AS updatedAt, d.order AS order
+             ORDER BY d.order ASC, d.updatedAt DESC`
         );
 
         return result.records.map(record => ({
@@ -788,6 +789,7 @@ export async function getDashboards(): Promise<DashboardMeta[]> {
             name: record.get('name') || 'Untitled',
             query: record.get('query') || '',
             layout: record.get('layout') || '{}',
+            order: record.get('order') !== null ? record.get('order').toNumber() : undefined,
             createdAt: record.get('createdAt'),
             updatedAt: record.get('updatedAt'),
         }));
@@ -874,6 +876,26 @@ export async function saveDashboard(
 }
 
 /**
+ * Save the order of dashboards
+ * @param ids - Array of dashboard IDs in the desired order
+ */
+export async function saveDashboardsOrder(ids: string[]): Promise<void> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+
+    try {
+        await session.run(
+            `UNWIND range(0, size($ids) - 1) AS i
+             MATCH (d:_GraphiveDashboard) WHERE elementId(d) = $ids[i]
+             SET d.order = i`,
+            { ids }
+        );
+    } finally {
+        await session.close();
+    }
+}
+
+/**
  * Delete a dashboard
  */
 export async function deleteDashboard(id: string): Promise<void> {
@@ -888,6 +910,25 @@ export async function deleteDashboard(id: string): Promise<void> {
             { id }
         );
         console.log('🗑️ Dashboard deleted:', id);
+    } finally {
+        await session.close();
+    }
+}
+
+/**
+ * Rename a dashboard
+ */
+export async function renameDashboard(id: string, name: string): Promise<void> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+
+    try {
+        await session.run(
+            `MATCH (d:_GraphiveDashboard)
+             WHERE elementId(d) = $id
+             SET d.name = $name, d.updatedAt = datetime()`,
+            { id, name }
+        );
     } finally {
         await session.close();
     }

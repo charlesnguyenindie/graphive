@@ -1,8 +1,8 @@
-import { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
     ChevronDown, ChevronUp, Save, LayoutDashboard,
-    Pencil, Trash2, Check, X, Loader2
+    Pencil, Trash2, Check, X, Loader2, Plus, GripVertical
 } from 'lucide-react';
 import { useGraphStore } from '../store/useGraphStore';
 import { getDashboards, deleteDashboard, DashboardMeta } from '../services/neo4jService';
@@ -13,7 +13,8 @@ const styles: Record<string, React.CSSProperties> = {
     panel: {
         position: 'absolute',
         top: spacing.md,
-        right: spacing.md,
+        left: '50%',
+        transform: 'translateX(-50%)',
         width: '280px',
         backgroundColor: 'rgba(255, 255, 255, 0.95)',
         backdropFilter: 'blur(8px)',
@@ -153,6 +154,32 @@ const styles: Record<string, React.CSSProperties> = {
         borderRadius: radii.sm,
         outline: 'none',
     },
+    createRow: {
+        display: 'flex',
+        gap: spacing.xs,
+        paddingBottom: spacing.sm,
+        borderBottom: `1px solid ${colors.borderDefault}`,
+        marginBottom: spacing.sm,
+    },
+    createButton: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: spacing.xs,
+        backgroundColor: colors.primary,
+        color: '#FFFFFF',
+        border: 'none',
+        borderRadius: radii.sm,
+        cursor: 'pointer',
+    },
+    dragHandle: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: colors.textSecondary,
+        cursor: 'grab',
+        paddingRight: spacing.xs,
+    },
 };
 
 export function DashboardPanel() {
@@ -161,6 +188,8 @@ export function DashboardPanel() {
     const [isLoadingList, setIsLoadingList] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editName, setEditName] = useState('');
+    const [createName, setCreateName] = useState('');
+    const [draggedId, setDraggedId] = useState<string | null>(null);
 
     const {
         activeDashboardId,
@@ -170,6 +199,9 @@ export function DashboardPanel() {
         loadDashboard,
         saveDashboard,
         setDashboardName,
+        createDashboardAsCopy,
+        reorderDashboards,
+        renameDashboard,
     } = useGraphStore(
         useShallow((state) => ({
             activeDashboardId: state.activeDashboardId,
@@ -179,6 +211,9 @@ export function DashboardPanel() {
             loadDashboard: state.loadDashboard,
             saveDashboard: state.saveDashboard,
             setDashboardName: state.setDashboardName,
+            createDashboardAsCopy: state.createDashboardAsCopy,
+            reorderDashboards: state.reorderDashboards,
+            renameDashboard: state.renameDashboard,
         }))
     );
 
@@ -239,6 +274,51 @@ export function DashboardPanel() {
         setEditName('');
     }, []);
 
+    const handleRename = useCallback(async (id: string, newName: string) => {
+        if (!newName.trim() || !id) return;
+        await renameDashboard(id, newName);
+        setEditingId(null);
+        setEditName('');
+        fetchDashboards();
+    }, [renameDashboard, fetchDashboards]);
+
+    const handleCreate = useCallback(async () => {
+        if (!createName.trim()) return;
+        await createDashboardAsCopy(createName);
+        setCreateName('');
+        fetchDashboards();
+    }, [createName, createDashboardAsCopy, fetchDashboards]);
+
+    const onDragStart = (e: React.DragEvent, id: string) => {
+        setDraggedId(id);
+        e.dataTransfer.effectAllowed = 'move';
+        // Hide preview?
+    };
+
+    const onDragOver = (e: React.DragEvent) => {
+        e.preventDefault(); // allow drop
+    };
+
+    const onDrop = async (e: React.DragEvent, targetId: string) => {
+        e.preventDefault();
+        if (!draggedId || draggedId === targetId) return;
+
+        const oldIndex = dashboards.findIndex(d => d.id === draggedId);
+        const newIndex = dashboards.findIndex(d => d.id === targetId);
+
+        if (oldIndex < 0 || newIndex < 0) return;
+
+        const newList = [...dashboards];
+        const [moved] = newList.splice(oldIndex, 1);
+        newList.splice(newIndex, 0, moved);
+
+        setDashboards(newList);
+        setDraggedId(null);
+
+        // Persist order
+        await reorderDashboards(newList.map(d => d.id));
+    };
+
     const toggleCollapse = useCallback(() => {
         setIsCollapsed((prev) => !prev);
     }, []);
@@ -258,6 +338,26 @@ export function DashboardPanel() {
             {/* Content */}
             {!isCollapsed && (
                 <div style={styles.content}>
+                    {/* V15.1: Create New Section */}
+                    <div style={styles.createRow}>
+                        <input
+                            type="text"
+                            style={styles.nameInput}
+                            value={createName}
+                            onChange={(e) => setCreateName(e.target.value)}
+                            placeholder="New dashboard name..."
+                        />
+                        <button
+                            style={styles.createButton}
+                            onClick={handleCreate}
+                            disabled={!createName.trim() || isSyncing}
+                            title="Save current view as New Dashboard"
+                        >
+                            <Plus size={16} />
+                        </button>
+                    </div>
+
+                    <div style={styles.listTitle}>Current Dashboard</div>
                     {/* Dashboard Name Editor */}
                     <div style={styles.nameEditRow}>
                         <input
@@ -305,12 +405,20 @@ export function DashboardPanel() {
                         dashboards.map((dashboard) => (
                             <div
                                 key={dashboard.id}
+                                draggable
+                                onDragStart={(e) => onDragStart(e, dashboard.id)}
+                                onDragOver={onDragOver}
+                                onDrop={(e) => onDrop(e, dashboard.id)}
                                 style={{
                                     ...styles.dashboardItem,
                                     ...(dashboard.id === activeDashboardId ? styles.dashboardItemActive : {}),
+                                    opacity: draggedId === dashboard.id ? 0.5 : 1,
                                 }}
                                 onDoubleClick={() => handleLoad(dashboard.id)}
                             >
+                                <div style={styles.dragHandle}>
+                                    <GripVertical size={14} />
+                                </div>
                                 {editingId === dashboard.id ? (
                                     <>
                                         <input
@@ -321,14 +429,19 @@ export function DashboardPanel() {
                                             autoFocus
                                             onKeyDown={(e) => {
                                                 if (e.key === 'Enter') {
-                                                    // TODO: Save rename
-                                                    cancelEdit();
+                                                    handleRename(dashboard.id, editName);
                                                 } else if (e.key === 'Escape') {
                                                     cancelEdit();
                                                 }
                                             }}
                                         />
                                         <div style={styles.itemActions}>
+                                            <button
+                                                style={{ ...styles.iconButton, color: 'var(--success)' }}
+                                                onClick={() => handleRename(dashboard.id, editName)}
+                                            >
+                                                <Check size={14} />
+                                            </button>
                                             <button style={styles.iconButton} onClick={cancelEdit}>
                                                 <X size={14} />
                                             </button>

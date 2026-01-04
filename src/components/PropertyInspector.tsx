@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Plus, Trash2, Eye, Network, X, Tag } from 'lucide-react';
 import { useGraphStore, NodeData } from '../store/useGraphStore';
+import { getDisplayableKeys, getDisplayLabel } from '../utils/nodeDisplay';
 import { Node } from '@xyflow/react';
 import './PropertyInspector.css';
 
@@ -18,6 +19,8 @@ export function PropertyInspector() {
     // V14: Label management
     const addLabel = useGraphStore((state) => state.addLabel);
     const removeLabel = useGraphStore((state) => state.removeLabel);
+    // V14: Display key override
+    const setNodeDisplayKey = useGraphStore((state) => state.setNodeDisplayKey);
 
     // Get first selected node
     const selectedNode = nodes.find((n) => n.selected) as Node<NodeData> | undefined;
@@ -44,8 +47,12 @@ export function PropertyInspector() {
 
     // Extract properties (exclude internal/special keys - shown separately above)
     const properties = Object.entries(selectedNode.data).filter(
-        ([key]) => !['label', 'collapsed', 'isEditing', 'isDraft', 'x', 'y', '_elementId', '_labels'].includes(key)
+        ([key]) => !['label', 'collapsed', 'isEditing', 'isDraft', 'x', 'y', '_elementId', '_labels', '_displayKey'].includes(key)
     );
+
+    // V14: Get displayable keys for dropdown
+    const displayableKeys = getDisplayableKeys(selectedNode.data);
+    const currentDisplayKey = selectedNode.data._displayKey as string | undefined;
 
     const handleStartEdit = (key: string, value: unknown) => {
         setEditingKey(key);
@@ -98,7 +105,7 @@ export function PropertyInspector() {
         <div className="property-inspector">
             <div className="property-inspector__header">
                 <h3 className="property-inspector__title">
-                    {selectedNode.data.label || 'Unnamed Node'}
+                    {getDisplayLabel(selectedNode.data) || 'Unnamed Node'}
                 </h3>
                 <button
                     className="property-inspector__expand-btn"
@@ -109,6 +116,27 @@ export function PropertyInspector() {
                     Expand
                 </button>
             </div>
+
+            {/* V14: Display Key Selector */}
+            {
+                displayableKeys.length > 0 && (
+                    <div className="property-inspector__display-row">
+                        <label className="property-inspector__display-label">Display as:</label>
+                        <select
+                            className="property-inspector__display-select"
+                            value={currentDisplayKey || ''}
+                            onChange={(e) => setNodeDisplayKey(selectedNode.id, e.target.value || null)}
+                        >
+                            <option value="">Auto ({getDisplayLabel(selectedNode.data).slice(0, 15)}...)</option>
+                            {displayableKeys.map((key) => (
+                                <option key={key} value={key}>
+                                    {key}: {String(selectedNode.data[key]).slice(0, 20)}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )
+            }
 
             <div className="property-inspector__list">
                 {/* V14: Show Neo4j ID (read-only) */}
@@ -223,15 +251,17 @@ export function PropertyInspector() {
             </div>
 
             {/* Add Property Button */}
-            {!isAddingProperty && (
-                <button
-                    className="property-inspector__add-btn"
-                    onClick={() => setIsAddingProperty(true)}
-                >
-                    <Plus size={14} />
-                    Add Property
-                </button>
-            )}
-        </div>
+            {
+                !isAddingProperty && (
+                    <button
+                        className="property-inspector__add-btn"
+                        onClick={() => setIsAddingProperty(true)}
+                    >
+                        <Plus size={14} />
+                        Add Property
+                    </button>
+                )
+            }
+        </div >
     );
 }

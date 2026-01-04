@@ -281,3 +281,37 @@
     color: var(--color-accent);
     border-color: var(--color-accent);
 }
+
+/* V14: Display Key Selector */
+.property-inspector__display-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--color-border-default);
+    background: rgba(0, 0, 0, 0.02);
+}
+
+.property-inspector__display-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+}
+
+.property-inspector__display-select {
+    flex: 1;
+    font-size: 11px;
+    padding: 4px 6px;
+    border: 1px solid var(--color-border-default);
+    border-radius: 4px;
+    background: white;
+    color: var(--color-text-primary);
+    cursor: pointer;
+    outline: none;
+    max-width: 160px;
+}
+
+.property-inspector__display-select:focus {
+    border-color: var(--color-accent);
+}

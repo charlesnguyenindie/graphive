@@ -3,6 +3,7 @@ import { Handle, Position, NodeProps, NodeResizer } from '@xyflow/react';
 import { useShallow } from 'zustand/react/shallow';
 import { Minus, Plus } from 'lucide-react';
 import { useGraphStore, NodeData } from '../../store/useGraphStore';
+import { getDisplayLabel } from '../../utils/nodeDisplay';
 import './nodes.css';
 
 /**
@@ -35,7 +36,7 @@ function RectangleNodeComponent({ id, data, selected, width, height }: NodeProps
     const hasOutgoingEdges = edges.some((e) => e.source === id);
 
     // Local state for editing
-    const [editValue, setEditValue] = useState(nodeData.label);
+    const [editValue, setEditValue] = useState(getDisplayLabel(nodeData) || '');
     // V13: Track if initial select has been done
     const [hasInitialSelect, setHasInitialSelect] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
@@ -67,9 +68,10 @@ function RectangleNodeComponent({ id, data, selected, width, height }: NodeProps
     // Double-click to enter edit mode
     const handleDoubleClick = useCallback((e: React.MouseEvent) => {
         e.stopPropagation();
-        setEditValue(nodeData.label);
+        // V14 Fix: Use display label or empty string to prevent undefined crash
+        setEditValue(getDisplayLabel(nodeData) || '');
         setNodeEditing(id, true);
-    }, [id, nodeData.label, setNodeEditing]);
+    }, [id, nodeData, setNodeEditing]);
 
     // V13: Save logic - different for draft vs existing nodes
     const handleSave = useCallback(() => {
@@ -172,7 +174,7 @@ function RectangleNodeComponent({ id, data, selected, width, height }: NodeProps
                     />
                 ) : (
                     <div className="node-label" onDoubleClick={handleDoubleClick}>
-                        {nodeData.label}
+                        {getDisplayLabel(nodeData, nodeData._displayKey as string | undefined)}
                     </div>
                 )}
 

@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { Search, X } from 'lucide-react';
 import { useGraphStore } from '../store/useGraphStore';
+import { getDisplayLabel } from '../utils/nodeDisplay';
 import './SearchBar.css';
 
 export function SearchBar() {
@@ -18,7 +19,7 @@ export function SearchBar() {
 
         // Find node by label (case-insensitive partial match)
         const foundNode = nodes.find((node) => {
-            const label = (node.data as { label?: string })?.label?.toLowerCase() || '';
+            const label = getDisplayLabel(node.data as import('../store/useGraphStore').NodeData).toLowerCase();
             return label.includes(searchTerm) && !node.hidden;
         });
 

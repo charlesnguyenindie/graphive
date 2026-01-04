@@ -27,12 +27,18 @@ import {
     reverseRelationship as neo4jReverseRelationship,
     // V13: Edge migration
     migrateRelationship as neo4jMigrateRelationship,
+    // V14: Property & Label CRUD
+    updateNodeProperty as neo4jUpdateProperty,
+    deleteNodeProperty as neo4jDeleteProperty,
+    addNodeLabel as neo4jAddLabel,
+    removeNodeLabel as neo4jRemoveLabel,
+    expandNeighbors as neo4jExpandNeighbors,
 } from '../services/neo4jService';
 import { getLayoutedElements } from '../services/layoutService';
 import { useToastStore } from './useToastStore';
 
 export interface NodeData {
-    label: string;
+    label?: string;
     collapsed?: boolean;
     isEditing?: boolean;
     isDraft?: boolean;  // V13: Draft nodes not yet persisted
@@ -84,6 +90,14 @@ interface GraphState {
     // V8: Sync actions
     checkNeo4jConnection: () => Promise<void>;
     setSyncError: (error: string | null) => void;
+    // V14: Property & Label CRUD
+    updateNodeProperty: (nodeId: string, key: string, value: unknown) => void;
+    deleteNodeProperty: (nodeId: string, key: string) => void;
+    addNodeProperty: (nodeId: string, key: string, value: unknown) => void;
+    addLabel: (nodeId: string, label: string) => void;
+    removeLabel: (nodeId: string, label: string) => void;
+    expandNeighbors: (nodeId: string) => void;
+    setNodeDisplayKey: (nodeId: string, key: string | null) => void;
 }
 
 // Helper: Get all descendant node IDs recursively
@@ -216,16 +230,37 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         set({
             nodes: get().nodes.map(n =>
                 n.id === nodeId
-                    ? { ...n, data: { ...n.data, label, isEditing: false, isDraft: false } }
+                    ? { ...n, data: { ...n.data, label, name: label, isEditing: false, isDraft: false } }
                     : n
             ),
             isSyncing: true,
         });
 
         try {
-            await neo4jCreateNode(nodeId, label);
-            console.log('✅ Draft node committed to Neo4j:', nodeId);
-            set({ isSyncing: false });
+            // V14: Create node and get persistent ID (Element ID)
+            const newId = await neo4jCreateNode(label);
+            console.log('✅ Draft node committed to Neo4j:', { tempId: nodeId, newId });
+
+            set({
+                isSyncing: false,
+                // Replace temp ID with persistent ID
+                nodes: get().nodes.map(n =>
+                    n.id === nodeId
+                        ? {
+                            ...n,
+                            id: newId,
+                            data: { ...n.data, _elementId: newId }
+                        }
+                        : n
+                ),
+                // Also update any edges connected to this node
+                edges: get().edges.map(e => ({
+                    ...e,
+                    source: e.source === nodeId ? newId : e.source,
+                    target: e.target === nodeId ? newId : e.target,
+                }))
+            });
+
             // V13: Show success toast
             useToastStore.getState().addToast('success', `Node "${label}" created`);
         } catch (error) {
@@ -262,11 +297,12 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         const originalNodes = get().nodes;
         const originalNode = originalNodes.find(n => n.id === id);
         const originalLabel = originalNode?.data.label;
+        const originalName = originalNode?.data.name; // Capture original name
 
         // V8: Optimistic UI - apply immediately
         set({
             nodes: get().nodes.map((node) =>
-                node.id === id ? { ...node, data: { ...node.data, label } } : node
+                node.id === id ? { ...node, data: { ...node.data, label, name: label } } : node
             ),
             isSyncing: true,
         });
@@ -279,15 +315,22 @@ export const useGraphStore = create<GraphState>((set, get) => ({
             })
             .catch((error) => {
                 console.error('❌ Failed to sync node name to Neo4j:', error);
-                // Rollback: restore original label
+                // Rollback: restore original label and name
                 set({
                     nodes: get().nodes.map((node) =>
-                        node.id === id ? { ...node, data: { ...node.data, label: originalLabel ?? label } } : node
+                        node.id === id ? { ...node, data: { ...node.data, label: originalLabel ?? label, name: originalName } } : node
                     ),
                     isSyncing: false,
                     syncError: error instanceof Error ? error.message : 'Failed to update node name',
                 });
-                useToastStore.getState().addToast('error', 'Failed to update node name');
+
+                // V14: Better error message for unique constraints
+                const errorMessage = error instanceof Error ? error.message : '';
+                if (errorMessage.includes('already exists') || errorMessage.includes('ConstraintValidationFailed')) {
+                    useToastStore.getState().addToast('error', `Name '${label}' is already taken`);
+                } else {
+                    useToastStore.getState().addToast('error', 'Failed to update node name');
+                }
             });
     },
 
@@ -602,5 +645,229 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     // V8: Set sync error (for optimistic UI rollback)
     setSyncError: (error) => {
         set({ syncError: error, isSyncing: false });
+    },
+
+    // ============================================================
+    // V14: Property & Label CRUD with Optimistic UI
+    // ============================================================
+
+    updateNodeProperty: (nodeId, key, value) => {
+        const originalNodes = get().nodes;
+        const originalNode = originalNodes.find(n => n.id === nodeId);
+        const originalValue = originalNode?.data[key];
+
+        // Optimistic UI: Update immediately
+        set({
+            nodes: get().nodes.map(node =>
+                node.id === nodeId
+                    ? { ...node, data: { ...node.data, [key]: value } }
+                    : node
+            ),
+            isSyncing: true,
+        });
+
+        // Sync to Neo4j
+        neo4jUpdateProperty(nodeId, key, value)
+            .then(() => {
+                console.log('✅ Property updated:', { nodeId, key, value });
+                set({ isSyncing: false });
+            })
+            .catch((error) => {
+                console.error('❌ Failed to update property:', error);
+                // Rollback
+                set({
+                    nodes: get().nodes.map(node =>
+                        node.id === nodeId
+                            ? { ...node, data: { ...node.data, [key]: originalValue } }
+                            : node
+                    ),
+                    isSyncing: false,
+                });
+
+                // V14: Better error message for unique constraints
+                const errorMessage = error instanceof Error ? error.message : '';
+                if (errorMessage.includes('already exists') || errorMessage.includes('ConstraintValidationFailed')) {
+                    useToastStore.getState().addToast('error', `Value for '${key}' is already taken`);
+                } else {
+                    useToastStore.getState().addToast('error', 'Failed to update property');
+                }
+            });
+    },
+
+    deleteNodeProperty: (nodeId, key) => {
+        const originalNodes = get().nodes;
+        const originalNode = originalNodes.find(n => n.id === nodeId);
+        const originalValue = originalNode?.data[key];
+
+        // Optimistic UI: Remove the property
+        set({
+            nodes: get().nodes.map(node => {
+                if (node.id !== nodeId) return node;
+                const { [key]: _, ...restData } = node.data;
+                return { ...node, data: restData as NodeData };
+            }),
+            isSyncing: true,
+        });
+
+        // Sync to Neo4j
+        neo4jDeleteProperty(nodeId, key)
+            .then(() => {
+                console.log('✅ Property deleted:', { nodeId, key });
+                set({ isSyncing: false });
+            })
+            .catch((error) => {
+                console.error('❌ Failed to delete property:', error);
+                // Rollback: restore the property
+                set({
+                    nodes: get().nodes.map(node =>
+                        node.id === nodeId
+                            ? { ...node, data: { ...node.data, [key]: originalValue } }
+                            : node
+                    ),
+                    isSyncing: false,
+                });
+                useToastStore.getState().addToast('error', 'Failed to delete property');
+            });
+    },
+
+    addNodeProperty: (nodeId, key, value) => {
+        // addNodeProperty is functionally the same as updateNodeProperty (SET creates if not exists)
+        get().updateNodeProperty(nodeId, key, value);
+    },
+
+    addLabel: (nodeId, label) => {
+        const originalNodes = get().nodes;
+        const originalNode = originalNodes.find(n => n.id === nodeId);
+        const originalLabels = (originalNode?.data._labels as string[]) || [];
+
+        // Optimistic UI: Add label to _labels array
+        set({
+            nodes: get().nodes.map(node => {
+                if (node.id !== nodeId) return node;
+                const currentLabels = (node.data._labels as string[]) || [];
+                if (currentLabels.includes(label)) return node; // Already exists
+                return {
+                    ...node,
+                    data: { ...node.data, _labels: [...currentLabels, label] }
+                };
+            }),
+            isSyncing: true,
+        });
+
+        // Sync to Neo4j
+        neo4jAddLabel(nodeId, label)
+            .then(() => {
+                console.log('✅ Label added:', { nodeId, label });
+                set({ isSyncing: false });
+                useToastStore.getState().addToast('success', `Label "${label}" added`);
+            })
+            .catch((error) => {
+                console.error('❌ Failed to add label:', error);
+                // Rollback
+                set({
+                    nodes: get().nodes.map(node =>
+                        node.id === nodeId
+                            ? { ...node, data: { ...node.data, _labels: originalLabels } }
+                            : node
+                    ),
+                    isSyncing: false,
+                });
+                useToastStore.getState().addToast('error', 'Failed to add label');
+            });
+    },
+
+    removeLabel: (nodeId, label) => {
+        const originalNodes = get().nodes;
+        const originalNode = originalNodes.find(n => n.id === nodeId);
+        const originalLabels = (originalNode?.data._labels as string[]) || [];
+
+        // Optimistic UI: Remove label from _labels array
+        set({
+            nodes: get().nodes.map(node => {
+                if (node.id !== nodeId) return node;
+                const currentLabels = (node.data._labels as string[]) || [];
+                return {
+                    ...node,
+                    data: { ...node.data, _labels: currentLabels.filter(l => l !== label) }
+                };
+            }),
+            isSyncing: true,
+        });
+
+        // Sync to Neo4j
+        neo4jRemoveLabel(nodeId, label)
+            .then(() => {
+                console.log('✅ Label removed:', { nodeId, label });
+                set({ isSyncing: false });
+            })
+            .catch((error) => {
+                console.error('❌ Failed to remove label:', error);
+                // Rollback
+                set({
+                    nodes: get().nodes.map(node =>
+                        node.id === nodeId
+                            ? { ...node, data: { ...node.data, _labels: originalLabels } }
+                            : node
+                    ),
+                    isSyncing: false,
+                });
+                useToastStore.getState().addToast('error', 'Failed to remove label');
+            });
+    },
+
+    expandNeighbors: (nodeId) => {
+        set({ isLoading: true });
+
+        neo4jExpandNeighbors(nodeId)
+            .then((result) => {
+                const currentNodes = get().nodes;
+                const currentEdges = get().edges;
+
+                // Merge new nodes (avoid duplicates)
+                const existingNodeIds = new Set(currentNodes.map(n => n.id));
+                const newNodes = result.nodes.filter(n => !existingNodeIds.has(n.id));
+
+                // Merge new edges (avoid duplicates)
+                const existingEdgeIds = new Set(currentEdges.map(e => e.id));
+                const newEdges = result.edges.filter(e => !existingEdgeIds.has(e.id));
+
+                // Apply layout to position new nodes
+                if (newNodes.length > 0) {
+                    const allNodes = [...currentNodes, ...newNodes];
+                    const allEdges = [...currentEdges, ...newEdges];
+                    const layouted = getLayoutedElements(allNodes, allEdges);
+
+                    set({
+                        nodes: layouted.nodes,
+                        edges: layouted.edges,
+                        isLoading: false,
+                    });
+
+                    useToastStore.getState().addToast(
+                        'success',
+                        `Found ${newNodes.length} new node${newNodes.length !== 1 ? 's' : ''}`
+                    );
+                } else {
+                    set({ isLoading: false });
+                    useToastStore.getState().addToast('info', 'No additional neighbors found');
+                }
+            })
+            .catch((error) => {
+                console.error('❌ Failed to expand neighbors:', error);
+                set({ isLoading: false });
+                useToastStore.getState().addToast('error', 'Failed to expand neighbors');
+            });
+    },
+
+    // V14: Set which property key to display on a node (client-side only)
+    setNodeDisplayKey: (nodeId, key) => {
+        set({
+            nodes: get().nodes.map(node =>
+                node.id === nodeId
+                    ? { ...node, data: { ...node.data, _displayKey: key } }
+                    : node
+            ),
+        });
+        console.log('🏷️ Display key set:', { nodeId, key });
     },
 }));

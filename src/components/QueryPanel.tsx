@@ -137,7 +137,7 @@ const styles: Record<string, React.CSSProperties> = {
 
 export function QueryPanel() {
     const [isCollapsed, setIsCollapsed] = useState(false);
-    const [cypherQuery, setCypherQuery] = useState('MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 25');
+    const [cypherQuery, setCypherQuery] = useState('MATCH (n)\nOPTIONAL MATCH (n)-[r]-()\nRETURN n, r');
 
     const { isLoading, queryError, executeNeo4jQuery, clearCanvas, clearQueryError, isNeo4jConnected, isSyncing, checkNeo4jConnection } =
         useGraphStore(

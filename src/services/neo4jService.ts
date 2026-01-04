@@ -181,7 +181,9 @@ export function transformNeo4jData(records: Neo4jRecord[]): { nodes: Node<NodeDa
                         type: 'rectangle',
                         position: { x: 0, y: 0 }, // Will be set by layout
                         data: {
-                            label: getNodeLabel(value),
+                            ...props, // V14 Fix: Include all raw properties
+                            _elementId: internalKey, // V14: Internal ID for UI reference
+                            _labels: value.labels,   // V14: Labels for UI reference
                         },
                     });
                 }
@@ -345,11 +347,20 @@ export async function checkConnection(): Promise<boolean> {
 /**
  * Create a node in Neo4j
  */
-export async function createNode(id: string, name: string): Promise<void> {
-    await runQuery(
-        'CREATE (n:Concept {id: $id, name: $name})',
-        { id, name }
+/**
+ * Create a node in Neo4j and return its elementId
+ */
+export async function createNode(name: string): Promise<string> {
+    const result = await runQuery<{ records: Neo4jRecord[] }>(
+        'CREATE (n {name: $name}) RETURN elementId(n) AS id',
+        { name }
     );
+
+    // Extract ID from the result
+    if (result && result.records && result.records.length > 0) {
+        return result.records[0].get('id');
+    }
+    throw new Error('Failed to create node: No ID returned');
 }
 
 /**
@@ -357,7 +368,10 @@ export async function createNode(id: string, name: string): Promise<void> {
  */
 export async function updateNodeName(id: string, newName: string): Promise<void> {
     await runQuery(
-        'MATCH (n {id: $id}) SET n.name = $newName',
+        `MATCH (n)
+         WHERE elementId(n) = $id OR n.id = $id
+         WITH n LIMIT 1
+         SET n.name = $newName`,
         { id, newName }
     );
 }
@@ -367,7 +381,10 @@ export async function updateNodeName(id: string, newName: string): Promise<void>
  */
 export async function deleteNode(id: string): Promise<void> {
     await runQuery(
-        'MATCH (n {id: $id}) DETACH DELETE n',
+        `MATCH (n)
+         WHERE elementId(n) = $id OR n.id = $id
+         WITH n LIMIT 1
+         DETACH DELETE n`,
         { id }
     );
 }
@@ -551,3 +568,182 @@ export async function migrateRelationship(
         await session.close();
     }
 }
+
+// ============================================================
+// V14: Property & Label CRUD Operations
+// ============================================================
+
+/**
+ * Update or add a property on a node
+ * @param nodeId - The node's application ID (stored in node.id property)
+ * @param key - Property key
+ * @param value - Property value
+ */
+export async function updateNodeProperty(
+    nodeId: string,
+    key: string,
+    value: unknown
+): Promise<void> {
+    // We use apoc.create.setProperty if available, or a workaround with map merge.
+    // V14 Fix: Match by either property 'id' OR internal elementId to handle all nodes
+    await runQuery(
+        `MATCH (n)
+         WHERE elementId(n) = $nodeId OR n.id = $nodeId
+         WITH n LIMIT 1
+         CALL apoc.create.setProperty(n, $key, $value) YIELD node
+         RETURN node`,
+        { nodeId, key, value }
+    ).catch(async () => {
+        // Fallback if APOC is not installed
+        await runQuery(
+            `MATCH (n)
+             WHERE elementId(n) = $nodeId OR n.id = $nodeId
+             WITH n LIMIT 1
+             SET n += $props`,
+            { nodeId, props: { [key]: value } }
+        );
+    });
+}
+
+/**
+ * Delete a property from a node
+ * @param nodeId - The node's application ID
+ * @param key - Property key to remove
+ */
+export async function deleteNodeProperty(
+    nodeId: string,
+    key: string
+): Promise<void> {
+    // Use apoc.create.removeProperty if available, otherwise fallback
+    await runQuery(
+        `MATCH (n)
+         WHERE elementId(n) = $nodeId OR n.id = $nodeId
+         WITH n LIMIT 1
+         CALL apoc.create.removeProperty(n, $key) YIELD node
+         RETURN node`,
+        { nodeId, key }
+    ).catch(async () => {
+        // Fallback: set property to null (effectively removes it in Neo4j 5+)
+        await runQuery(
+            `MATCH (n)
+             WHERE elementId(n) = $nodeId OR n.id = $nodeId
+             WITH n LIMIT 1
+             SET n[$key] = null`,
+            { nodeId, key }
+        ).catch(async () => {
+            // Final fallback: map reconstruction
+            await runQuery(
+                `MATCH (n)
+                 WHERE elementId(n) = $nodeId OR n.id = $nodeId
+                 WITH n LIMIT 1
+                 SET n = apoc.map.removeKey(properties(n), $key)`,
+                { nodeId, key }
+            );
+        });
+    });
+}
+
+/**
+ * Add a label to a node
+ * Note: Labels cannot be parameterized in Cypher, so we sanitize and interpolate
+ * @param nodeId - The node's application ID
+ * @param label - Label to add (will be sanitized)
+ */
+export async function addNodeLabel(
+    nodeId: string,
+    label: string
+): Promise<void> {
+    // Sanitize label: only allow alphanumeric and underscore
+    const sanitizedLabel = label.replace(/[^a-zA-Z0-9_]/g, '_');
+    if (!sanitizedLabel) {
+        throw new Error('Invalid label: must contain alphanumeric characters');
+    }
+
+    // Try APOC first (cleaner), fallback to raw Cypher
+    await runQuery(
+        `MATCH (n)
+         WHERE elementId(n) = $nodeId OR n.id = $nodeId
+         WITH n LIMIT 1
+         CALL apoc.create.addLabels(n, [$label]) YIELD node
+         RETURN node`,
+        { nodeId, label: sanitizedLabel }
+    ).catch(async () => {
+        // Fallback: Use raw Cypher with backticks (label interpolated, not parameterized)
+        await runQuery(
+            `MATCH (n)
+             WHERE elementId(n) = $nodeId OR n.id = $nodeId
+             WITH n LIMIT 1
+             SET n:\`${sanitizedLabel}\``,
+            { nodeId }
+        );
+    });
+}
+
+/**
+ * Remove a label from a node
+ * @param nodeId - The node's application ID
+ * @param label - Label to remove (will be sanitized)
+ */
+export async function removeNodeLabel(
+    nodeId: string,
+    label: string
+): Promise<void> {
+    const sanitizedLabel = label.replace(/[^a-zA-Z0-9_]/g, '_');
+    if (!sanitizedLabel) {
+        throw new Error('Invalid label: must contain alphanumeric characters');
+    }
+
+    // Try APOC first, fallback to raw Cypher
+    await runQuery(
+        `MATCH (n)
+         WHERE elementId(n) = $nodeId OR n.id = $nodeId
+         WITH n LIMIT 1
+         CALL apoc.create.removeLabels(n, [$label]) YIELD node
+         RETURN node`,
+        { nodeId, label: sanitizedLabel }
+    ).catch(async () => {
+        // Fallback: Use raw Cypher with REMOVE
+        await runQuery(
+            `MATCH (n)
+             WHERE elementId(n) = $nodeId OR n.id = $nodeId
+             WITH n LIMIT 1
+             REMOVE n:\`${sanitizedLabel}\``,
+            { nodeId }
+        );
+    });
+}
+
+/**
+ * Expand neighbors of a node - returns connected nodes and relationships
+ * @param nodeId - The node's application ID
+ * @returns Transformed React Flow nodes and edges for neighbors
+ */
+export async function expandNeighbors(
+    nodeId: string
+): Promise<{ nodes: Node<NodeData>[]; edges: Edge[] }> {
+    const drv = getDriver();
+    const session: Session = drv.session();
+
+    try {
+        console.log('🔍 Expanding neighbors for:', nodeId);
+
+        const result = await session.run(
+            `MATCH (n)
+             WHERE elementId(n) = $nodeId OR n.id = $nodeId
+             MATCH (n)-[r]-(neighbor)
+             RETURN n, r, neighbor`,
+            { nodeId }
+        );
+
+        const transformed = transformNeo4jData(result.records);
+        console.log('✅ Found neighbors:', {
+            nodes: transformed.nodes.length,
+            edges: transformed.edges.length
+        });
+
+        return transformed;
+    } finally {
+        await session.close();
+    }
+}
+

@@ -25,6 +25,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { CanvasHint } from './components/CanvasHint';
 import { UnifiedControls } from './components/UnifiedControls';
 import { ToastContainer } from './components/ToastContainer';
+import { PropertyInspector } from './components/PropertyInspector';
 import './App.css';
 
 // Register custom node types
@@ -91,7 +92,11 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
                 ) {
                     return;
                 }
-                deleteSelected();
+
+                // Ask for confirmation
+                if (window.confirm('Are you sure you want to delete the selected item(s)?')) {
+                    deleteSelected();
+                }
             }
         },
         [deleteSelected]
@@ -201,6 +206,8 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
                 onConnectEnd={handleConnectEnd}
                 // V3: Increased connection radius for magnetic snap feel
                 connectionRadius={40}
+                // V14: Disable default delete key to handle confirmation manually
+                deleteKeyCode={null}
                 // V11: Hide React Flow attribution
                 proOptions={{ hideAttribution: true }}
             >
@@ -214,6 +221,8 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
                 <Toolbar />
                 <SearchBar />
                 <QueryPanel />
+                {/* V14: Property Inspector (Sidebar) */}
+                <PropertyInspector />
                 {/* V10: Canvas Hint for empty state */}
                 <CanvasHint />
 

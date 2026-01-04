@@ -3,6 +3,7 @@ import { Handle, Position, NodeProps, NodeResizer } from '@xyflow/react';
 import { useShallow } from 'zustand/react/shallow';
 import { Minus, Plus } from 'lucide-react';
 import { useGraphStore, NodeData } from '../../store/useGraphStore';
+import { getDisplayLabel } from '../../utils/nodeDisplay';
 import './nodes.css';
 
 /**
@@ -32,7 +33,7 @@ function CircleNodeComponent({ id, data, selected, width, height }: NodeProps) {
     const hasOutgoingEdges = edges.some((e) => e.source === id);
 
     // Local state for editing
-    const [editValue, setEditValue] = useState(nodeData.label);
+    const [editValue, setEditValue] = useState(getDisplayLabel(nodeData) || '');
     const inputRef = useRef<HTMLInputElement>(null);
 
     // Focus input when entering edit mode
@@ -46,9 +47,9 @@ function CircleNodeComponent({ id, data, selected, width, height }: NodeProps) {
     // Double-click to enter edit mode
     const handleDoubleClick = useCallback((e: React.MouseEvent) => {
         e.stopPropagation();
-        setEditValue(nodeData.label);
+        setEditValue(getDisplayLabel(nodeData) || '');
         setNodeEditing(id, true);
-    }, [id, nodeData.label, setNodeEditing]);
+    }, [id, nodeData, setNodeEditing]);
 
     // Save on Enter or blur
     const handleSave = useCallback(() => {
@@ -105,7 +106,7 @@ function CircleNodeComponent({ id, data, selected, width, height }: NodeProps) {
                     />
                 ) : (
                     <div className="node-label" onDoubleClick={handleDoubleClick}>
-                        {nodeData.label}
+                        {getDisplayLabel(nodeData, nodeData._displayKey as string | undefined)}
                     </div>
                 )}
 

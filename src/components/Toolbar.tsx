@@ -22,6 +22,12 @@ export function Toolbar() {
         addNode('rectangle', centerPosition);
     };
 
+    const handleDelete = () => {
+        if (window.confirm('Are you sure you want to delete the selected item(s)?')) {
+            deleteSelected();
+        }
+    };
+
     return (
         <div className="toolbar">
             {/* V11: Simplified Create Button with + icon */}
@@ -37,7 +43,7 @@ export function Toolbar() {
 
             <button
                 className="toolbar-button danger"
-                onClick={deleteSelected}
+                onClick={handleDelete}
                 disabled={!hasSelection}
                 title="Delete Selected (Backspace)"
             >

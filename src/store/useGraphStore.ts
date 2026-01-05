@@ -92,7 +92,8 @@ interface GraphState {
     setEdgeEditing: (edgeId: string, isEditing: boolean) => void;
     updateEdgeLabel: (edgeId: string, label: string) => void;
     // V5: Neo4j actions
-    executeNeo4jQuery: (cypherQuery: string) => Promise<void>;
+    // V17: Added additive parameter to merge results instead of replacing
+    executeNeo4jQuery: (cypherQuery: string, additive?: boolean) => Promise<void>;
     clearCanvas: () => void;
     clearQueryError: () => void;
     // V8: Sync actions
@@ -669,17 +670,56 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     },
 
     // V5: Neo4j query execution
-    executeNeo4jQuery: async (cypherQuery) => {
+    // V17: Added additive mode to merge results with existing nodes
+    executeNeo4jQuery: async (cypherQuery, additive = false) => {
         set({ isLoading: true, queryError: null });
         try {
             const result = await neo4jExecuteQuery(cypherQuery);
-            // Apply Dagre layout
-            const layouted = getLayoutedElements(result.nodes, result.edges);
-            set({
-                nodes: layouted.nodes,
-                edges: layouted.edges,
-                isLoading: false,
-            });
+
+            if (additive) {
+                // V17: Merge mode - add to existing nodes/edges
+                const currentNodes = get().nodes;
+                const currentEdges = get().edges;
+
+                // Deduplicate nodes by ID
+                const existingNodeIds = new Set(currentNodes.map(n => n.id));
+                const newNodes = result.nodes.filter(n => !existingNodeIds.has(n.id));
+
+                // Deduplicate edges by ID
+                const existingEdgeIds = new Set(currentEdges.map(e => e.id));
+                const newEdges = result.edges.filter(e => !existingEdgeIds.has(e.id));
+
+                if (newNodes.length > 0 || newEdges.length > 0) {
+                    // Layout only the new nodes, placing them after existing ones
+                    const layoutedNew = getLayoutedElements(newNodes, newEdges);
+
+                    // Offset new nodes to avoid overlap with existing
+                    const maxX = currentNodes.length > 0
+                        ? Math.max(...currentNodes.map(n => n.position.x)) + 300
+                        : 0;
+                    const offsetNewNodes = layoutedNew.nodes.map(n => ({
+                        ...n,
+                        position: { x: n.position.x + maxX, y: n.position.y }
+                    }));
+
+                    set({
+                        nodes: [...currentNodes, ...offsetNewNodes],
+                        edges: [...currentEdges, ...layoutedNew.edges],
+                        isLoading: false,
+                    });
+                } else {
+                    // No new data
+                    set({ isLoading: false });
+                }
+            } else {
+                // Original behavior: replace all
+                const layouted = getLayoutedElements(result.nodes, result.edges);
+                set({
+                    nodes: layouted.nodes,
+                    edges: layouted.edges,
+                    isLoading: false,
+                });
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Query execution failed';
             set({ isLoading: false, queryError: message });

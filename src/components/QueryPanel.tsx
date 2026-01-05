@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { ChevronDown, ChevronUp, Play, Trash2, Loader2, X, Wifi, WifiOff } from 'lucide-react';
+import { ChevronDown, ChevronUp, Play, Trash2, Loader2, X, Wifi, WifiOff, Plus } from 'lucide-react';
 import { useGraphStore } from '../store/useGraphStore';
 import { colors, spacing, typography, shadows, radii, transitions } from '../design_tokens';
 
@@ -138,6 +138,7 @@ const styles: Record<string, React.CSSProperties> = {
 export function QueryPanel() {
     const [isCollapsed, setIsCollapsed] = useState(false);
     const [localQuery, setLocalQuery] = useState('');
+    const [isAdditive, setIsAdditive] = useState(true);  // V17: Additive mode toggle (default: on)
 
     const {
         isLoading, queryError, executeNeo4jQuery, clearCanvas, clearQueryError,
@@ -175,8 +176,8 @@ export function QueryPanel() {
     const handleRun = useCallback(() => {
         if (!localQuery.trim() || isLoading) return;
         setCypherQuery(localQuery); // Sync to store before running
-        executeNeo4jQuery(localQuery);
-    }, [localQuery, isLoading, executeNeo4jQuery, setCypherQuery]);
+        executeNeo4jQuery(localQuery, isAdditive);  // V17: Pass additive flag
+    }, [localQuery, isLoading, executeNeo4jQuery, setCypherQuery, isAdditive]);
 
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -232,6 +233,26 @@ export function QueryPanel() {
                         placeholder="MATCH (n)-[r]->(m) RETURN n, r, m"
                         spellCheck={false}
                     />
+
+                    {/* V17: Additive Mode Toggle */}
+                    <label style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: spacing.xs,
+                        fontSize: typography.fontSize.sm,
+                        color: colors.textSecondary,
+                        cursor: 'pointer',
+                        userSelect: 'none' as const,
+                    }}>
+                        <input
+                            type="checkbox"
+                            checked={isAdditive}
+                            onChange={(e) => setIsAdditive(e.target.checked)}
+                            style={{ cursor: 'pointer' }}
+                        />
+                        <Plus size={12} />
+                        Add to View
+                    </label>
 
                     {/* Buttons */}
                     <div style={styles.buttonRow}>

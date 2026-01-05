@@ -10,6 +10,7 @@ import {
     shouldShowMixedContentWarning,
     RecentConnection,
     PROVIDER_PROTOCOLS,
+    getDefaultPort,
 } from '../config/connection';
 import { testConnection } from '../services/database';
 import './ConnectionModal.css';
@@ -91,10 +92,10 @@ export function ConnectionModal() {
         }
     }, [host]);
 
-    // Auto-fill port when protocol changes
+    // Auto-fill port when protocol or provider changes
     useEffect(() => {
-        setPort(DEFAULT_PORTS[protocol]);
-    }, [protocol]);
+        setPort(getDefaultPort(provider, protocol));
+    }, [protocol, provider]);
 
     // Fill form from recent connection
     const handleRecentClick = useCallback((recent: RecentConnection) => {
@@ -254,6 +255,11 @@ export function ConnectionModal() {
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                         />
+                        {provider === 'falkordb' && (
+                            <p className="connection-modal__hint">
+                                The FalkorDB Browser API requires a password. Check your Docker settings.
+                            </p>
+                        )}
                     </div>
 
                     {/* Mixed Content Warning */}

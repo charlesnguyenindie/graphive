@@ -32,15 +32,23 @@ export const DEFAULT_PORTS: Record<Protocol, string> = {
     'neo4j+s': '7687',
     'http': '7474',
     'https': '7473',
-    'redis': '6379',
-    'rediss': '6379',
+    'redis': '3000',   // FalkorDB Browser API
+    'rediss': '3000',  // FalkorDB Browser API (TLS)
 };
 
 // Protocols available for each provider
 export const PROVIDER_PROTOCOLS: Record<Provider, Protocol[]> = {
     neo4j: ['bolt', 'bolt+s', 'neo4j', 'neo4j+s', 'http', 'https'],
-    falkordb: ['redis', 'rediss'],
+    falkordb: ['http', 'https', 'redis', 'rediss'],
 };
+
+// Helper: Get default port based on provider + protocol
+export function getDefaultPort(provider: Provider, protocol: Protocol): string {
+    if (provider === 'falkordb' && (protocol === 'http' || protocol === 'https')) {
+        return '3000';
+    }
+    return DEFAULT_PORTS[protocol] || '7687';
+}
 
 // Protocols that are secure (TLS)
 export const SECURE_PROTOCOLS: Protocol[] = ['bolt+s', 'neo4j+s', 'https', 'rediss'];

@@ -5,6 +5,7 @@
 
 import { ConnectionConfig, DashboardMeta, GraphDBAdapter, GraphResult } from './types';
 import { Neo4jAdapter } from './adapters/Neo4jAdapter';
+import { FalkorDBAdapter } from './adapters/FalkorDBAdapter';
 import { Node, Edge } from '@xyflow/react';
 import { NodeData } from '../../store/useGraphStore';
 
@@ -32,8 +33,8 @@ function getOrCreateAdapter(provider: 'neo4j' | 'falkordb'): GraphDBAdapter {
             activeAdapter = new Neo4jAdapter();
             break;
         case 'falkordb':
-            // Future: activeAdapter = new FalkorDBAdapter();
-            throw new Error('FalkorDB adapter not yet implemented');
+            activeAdapter = new FalkorDBAdapter();
+            break;
         default:
             throw new Error(`Unknown database provider: ${provider}`);
     }
@@ -43,7 +44,7 @@ function getOrCreateAdapter(provider: 'neo4j' | 'falkordb'): GraphDBAdapter {
 
 /**
  * Get the current active adapter
- * Throws if no adapter is initialized
+ * Throws if not initialized
  */
 export function getAdapter(): GraphDBAdapter {
     if (!activeAdapter) {

@@ -4,23 +4,36 @@ import { useConnectionStore } from '../store/useConnectionStore';
 import {
     ConnectionConfig,
     Protocol,
+    Provider,
     DEFAULT_PORTS,
     SECURE_PROTOCOLS,
     shouldShowMixedContentWarning,
     RecentConnection,
+    PROVIDER_PROTOCOLS,
 } from '../config/connection';
 import { testConnection } from '../services/database';
 import './ConnectionModal.css';
 
-// Protocol options for dropdown
-const PROTOCOL_OPTIONS: { value: Protocol; label: string }[] = [
-    { value: 'bolt', label: 'bolt://' },
-    { value: 'bolt+s', label: 'bolt+s://' },
-    { value: 'neo4j', label: 'neo4j://' },
-    { value: 'neo4j+s', label: 'neo4j+s://' },
-    { value: 'http', label: 'http://' },
-    { value: 'https', label: 'https://' },
+// Provider options
+const PROVIDER_OPTIONS: { value: Provider; label: string }[] = [
+    { value: 'neo4j', label: 'Neo4j' },
+    { value: 'falkordb', label: 'FalkorDB' },
 ];
+
+// Helper to get protocol labels
+const getProtocolLabel = (p: Protocol) => {
+    switch (p) {
+        case 'bolt': return 'bolt:// (TCP)';
+        case 'bolt+s': return 'bolt+s:// (TLS)';
+        case 'neo4j': return 'neo4j:// (Routing)';
+        case 'neo4j+s': return 'neo4j+s:// (Routing+TLS)';
+        case 'http': return 'http://';
+        case 'https': return 'https://';
+        case 'redis': return 'redis://';
+        case 'rediss': return 'rediss:// (TLS)';
+        default: return p + '://';
+    }
+};
 
 export function ConnectionModal() {
     const {
@@ -48,11 +61,14 @@ export function ConnectionModal() {
     );
 
     // Form state
+    // Form state
+    const [provider, setProvider] = useState<Provider>('neo4j');
     const [protocol, setProtocol] = useState<Protocol>('bolt');
     const [host, setHost] = useState('');
     const [port, setPort] = useState('7687');
     const [username, setUsername] = useState('neo4j');
     const [password, setPassword] = useState('');
+    const [database, setDatabase] = useState(''); // Added V16 support for database name
 
     // Derived state
     const showMixedContentWarning = shouldShowMixedContentWarning(protocol);
@@ -82,6 +98,7 @@ export function ConnectionModal() {
 
     // Fill form from recent connection
     const handleRecentClick = useCallback((recent: RecentConnection) => {
+        setProvider(recent.provider || 'neo4j'); // Fallback for old history
         setProtocol(recent.protocol);
         setHost(recent.host);
         setPort(recent.port);
@@ -98,12 +115,13 @@ export function ConnectionModal() {
         setTestError(null);
 
         const config: ConnectionConfig = {
-            provider: 'neo4j',  // V16: Default to Neo4j
+            provider,
             protocol,
             host: host.trim(),
             port: port.trim() || DEFAULT_PORTS[protocol],
             username: username.trim(),
             password,
+            database: database || undefined,
         };
 
         try {
@@ -121,7 +139,7 @@ export function ConnectionModal() {
         } finally {
             setTesting(false);
         }
-    }, [protocol, host, port, username, password, isFormValid, setConnection, setTesting, setTestError]);
+    }, [provider, protocol, host, port, username, password, database, isFormValid, setConnection, setTesting, setTestError]);
 
     // Handle Enter key
     const handleKeyDown = useCallback(
@@ -153,7 +171,27 @@ export function ConnectionModal() {
 
                 {/* Form */}
                 <div className="connection-modal__form">
-                    {/* Protocol + Host Row */}
+                    {/* Protocol + Host */}
+                    <div className="connection-modal__field">
+                        <label className="connection-modal__label">Database Provider</label>
+                        <select
+                            className="connection-modal__select"
+                            value={provider}
+                            onChange={(e) => {
+                                const newProvider = e.target.value as Provider;
+                                setProvider(newProvider);
+                                // Reset protocol to default for provider
+                                setProtocol(PROVIDER_PROTOCOLS[newProvider][0]);
+                            }}
+                        >
+                            {PROVIDER_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                    {opt.label}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+
                     <div className="connection-modal__row">
                         <div className="connection-modal__field connection-modal__protocol">
                             <label className="connection-modal__label">Protocol</label>
@@ -162,9 +200,9 @@ export function ConnectionModal() {
                                 value={protocol}
                                 onChange={(e) => setProtocol(e.target.value as Protocol)}
                             >
-                                {PROTOCOL_OPTIONS.map((opt) => (
-                                    <option key={opt.value} value={opt.value}>
-                                        {opt.label}
+                                {PROVIDER_PROTOCOLS[provider].map((p) => (
+                                    <option key={p} value={p}>
+                                        {getProtocolLabel(p)}
                                     </option>
                                 ))}
                             </select>

@@ -2,18 +2,21 @@
 // V9: Connection Configuration & Types
 // ============================================================
 
-export type Protocol = 'bolt' | 'bolt+s' | 'neo4j' | 'neo4j+s' | 'http' | 'https';
+export type Protocol = 'bolt' | 'bolt+s' | 'neo4j' | 'neo4j+s' | 'http' | 'https' | 'redis' | 'rediss';
+export type Provider = 'neo4j' | 'falkordb';
 
 export interface ConnectionConfig {
-    provider: 'neo4j' | 'falkordb';  // V16: Database provider
+    provider: Provider;  // V26: Database provider
     protocol: Protocol;
     host: string;      // e.g., "localhost" or "db-id.databases.neo4j.io"
-    port: string;      // e.g., "7687"
+    port: string;      // e.g., "7687" or "6379"
     username: string;
     password: string;
+    database?: string; // Neo4j database name or FalkorDB graph key
 }
 
 export interface RecentConnection {
+    provider: Provider;
     protocol: Protocol;
     host: string;
     port: string;
@@ -29,10 +32,18 @@ export const DEFAULT_PORTS: Record<Protocol, string> = {
     'neo4j+s': '7687',
     'http': '7474',
     'https': '7473',
+    'redis': '6379',
+    'rediss': '6379',
+};
+
+// Protocols available for each provider
+export const PROVIDER_PROTOCOLS: Record<Provider, Protocol[]> = {
+    neo4j: ['bolt', 'bolt+s', 'neo4j', 'neo4j+s', 'http', 'https'],
+    falkordb: ['redis', 'rediss'],
 };
 
 // Protocols that are secure (TLS)
-export const SECURE_PROTOCOLS: Protocol[] = ['bolt+s', 'neo4j+s', 'https'];
+export const SECURE_PROTOCOLS: Protocol[] = ['bolt+s', 'neo4j+s', 'https', 'rediss'];
 
 // Check if mixed content warning should be shown
 export function shouldShowMixedContentWarning(protocol: Protocol): boolean {

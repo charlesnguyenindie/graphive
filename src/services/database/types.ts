@@ -10,7 +10,7 @@ import { NodeData } from '../../store/useGraphStore';
 // Connection Configuration
 // ============================================================
 
-export type Protocol = 'bolt' | 'bolt+s' | 'bolt+ssc' | 'neo4j' | 'neo4j+s' | 'neo4j+ssc' | 'http' | 'https';
+export type Protocol = 'bolt' | 'bolt+s' | 'bolt+ssc' | 'neo4j' | 'neo4j+s' | 'neo4j+ssc' | 'http' | 'https' | 'redis' | 'rediss';
 
 export const DEFAULT_PORTS: Record<Protocol, string> = {
     bolt: '7687',
@@ -21,6 +21,8 @@ export const DEFAULT_PORTS: Record<Protocol, string> = {
     'neo4j+ssc': '7687',
     http: '7474',
     https: '7473',
+    redis: '6379',
+    rediss: '6379',
 };
 
 export interface ConnectionConfig {

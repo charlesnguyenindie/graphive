@@ -73,6 +73,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
         // Add to recent connections
         get().addRecentConnection({
+            provider: config.provider,
             protocol: config.protocol,
             host: config.host,
             port: config.port,
@@ -113,10 +114,10 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     addRecentConnection: (conn) => {
         const current = get().recentConnections;
 
-        // Check for duplicates (same protocol + host + port)
-        const key = `${conn.protocol}://${conn.host}:${conn.port}`;
+        // Check for duplicates (same provider + protocol + host + port)
+        const key = `${conn.provider}://${conn.protocol}://${conn.host}:${conn.port}`;
         const filtered = current.filter(
-            (c) => `${c.protocol}://${c.host}:${c.port}` !== key
+            (c) => `${c.provider}://${c.protocol}://${c.host}:${c.port}` !== key
         );
 
         // Add to front, keep max 3

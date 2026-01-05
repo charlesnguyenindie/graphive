@@ -11,14 +11,13 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-    const { currentConnection, clearConnection } = useConnectionStore(
+    const { currentConnection, clearConnection, isAuthenticated } = useConnectionStore(
         useShallow((state) => ({
             currentConnection: state.currentConnection,
             clearConnection: state.clearConnection,
+            isAuthenticated: state.isAuthenticated,
         }))
     );
-
-    const isNeo4jConnected = useGraphStore((state) => state.isNeo4jConnected);
 
     // Don't render if not authenticated or modal is closed
     if (!currentConnection || !isOpen) return null;
@@ -52,8 +51,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         <h3 className="settings-modal__section-title">Connection</h3>
                         <div className="settings-modal__info-row">
                             <span className="settings-modal__label">Status</span>
-                            <span className={`settings-modal__value ${isNeo4jConnected ? 'settings-modal__value--connected' : 'settings-modal__value--disconnected'}`}>
-                                {isNeo4jConnected ? '🟢 Connected' : '🔴 Disconnected'}
+                            <span className={`settings-modal__value ${isAuthenticated ? 'settings-modal__value--connected' : 'settings-modal__value--disconnected'}`}>
+                                {isAuthenticated ? '🟢 Connected' : '🔴 Disconnected'}
                             </span>
                         </div>
                         <div className="settings-modal__info-row">

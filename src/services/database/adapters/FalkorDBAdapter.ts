@@ -28,8 +28,17 @@ export class FalkorDBAdapter implements GraphDBAdapter {
 
         // Construct Base URL (FalkorDB Browser API)
         // Protocol: http/https based on config (mapped from redis/rediss or http/s)
+        const protocol = (config.protocol === 'rediss' || config.protocol === 'https') ? 'https' : 'http';
+        this.baseUrl = `${protocol}://${config.host}:${config.port}`; // e.g. http://localhost:3000
+
+        // Try to restore token from session (fix for reload delay)
+        const storageKey = `falkordb_token_${config.host}_${config.port}`;
+        const storedToken = sessionStorage.getItem(storageKey);
+        if (storedToken) {
+            this.accessToken = storedToken;
+            console.log('⚡️ Restored FalkorDB token from session');
+        }
         // Usually http://localhost:3000
-        const protocol = config.protocol === 'rediss' || config.protocol === 'https' ? 'https' : 'http';
 
         // Use Vite Proxy to bypass CORS for localhost:3000
         // Request -> /api -> Vite Server -> http://localhost:3000/api
@@ -111,7 +120,17 @@ export class FalkorDBAdapter implements GraphDBAdapter {
         const text = await res.text();
         try {
             const json = JSON.parse(text);
-            return json.token || json; // Handle { token: "..." } or "..."
+            const token = json.token || json;
+
+            // Persist for reload
+            try {
+                const storageKey = `falkordb_token_${config.host}_${config.port}`;
+                sessionStorage.setItem(storageKey, token);
+            } catch (e) {
+                console.warn('Failed to persist token:', e);
+            }
+
+            return token;
         } catch {
             return text; // It's just a raw string
         }
@@ -128,14 +147,127 @@ export class FalkorDBAdapter implements GraphDBAdapter {
     // --- Query Execution ---
 
     async executeQuery(cypherQuery: string): Promise<{ nodes: Node<NodeData>[]; edges: Edge[] }> {
-        // For V28, we perform the query but return empty visualization
-        // until we port the transformer completely.
         const result = await this.runQuery(cypherQuery);
-        console.log('FalkorDB Raw Result:', result);
-        return { nodes: [], edges: [] };
+        return this.processGraphResult(result);
+    }
+
+    private processGraphResult(result: GraphResult): { nodes: Node<NodeData>[]; edges: Edge[] } {
+        const nodesMap = new Map<string, Node<NodeData>>();
+        const edgesMap = new Map<string, Edge>();
+
+        result.records.forEach((record) => {
+            Object.values(record).forEach((value) => {
+                if (!value) return;
+
+                // Identify Node: has id (number/string), labels (array), properties (object)
+                // properties check is safe, labels check is specific to graph node
+                if (
+                    'id' in value &&
+                    'labels' in value &&
+                    Array.isArray(value.labels) &&
+                    'properties' in value
+                ) {
+                    // V30: Skip internal dashboard nodes (match Neo4j behavior)
+                    if (value.labels.includes('_GraphiveDashboard')) {
+                        return;
+                    }
+
+                    const id = String(value.id);
+                    if (!nodesMap.has(id)) {
+                        const props = value.properties as Record<string, any> || {};
+                        nodesMap.set(id, {
+                            id,
+                            type: 'rectangle', // Default to rectangle
+                            position: { x: 0, y: 0 }, // Layout will handle this
+                            data: {
+                                ...props, // Flatten properties into data
+                                label: props.name || value.labels[0] || `Node ${id}`,
+                                _labels: value.labels, // Internal meta
+                                _elementId: id,
+                                color: '#333' // Default color
+                            }
+                        });
+                    }
+                }
+
+                // Identify Edge: FalkorDB Browser API format
+                // FalkorDB uses: { id, relationshipType, sourceId, destinationId, properties }
+                // (Different from RedisGraph which uses: type, start, end)
+                if (
+                    'id' in value &&
+                    ('relationshipType' in value || 'type' in value) &&
+                    ('sourceId' in value || 'start' in value || 'startNode' in value) &&
+                    ('destinationId' in value || 'end' in value || 'endNode' in value)
+                ) {
+                    // V30: Use property id if available (persisted by createEdge), fallback to internal id
+                    const props = value.properties as Record<string, any> || {};
+                    const id = props.id ? String(props.id) : `e${value.id}`;
+                    if (!edgesMap.has(id)) {
+                        // Handle FalkorDB Browser API format (sourceId/destinationId) and legacy format (start/end)
+                        const source = String(value.sourceId ?? value.start ?? value.startNode);
+                        const target = String(value.destinationId ?? value.end ?? value.endNode);
+                        const relType = value.relationshipType ?? value.type;
+
+                        edgesMap.set(id, {
+                            id,
+                            source,
+                            target,
+                            // V30: Set handle IDs to match Neo4j behavior (bottom -> top flow)
+                            sourceHandle: 'bottom-h',
+                            targetHandle: 'top-h',
+                            type: 'custom', // SmartEdge
+                            label: relType,
+                            data: {
+                                ...props, // Flatten properties
+                                label: props.label || relType, // Prefer persisted label
+                                _elementId: id
+                            },
+                        });
+                    }
+                }
+            });
+        });
+
+        return {
+            nodes: Array.from(nodesMap.values()),
+            edges: Array.from(edgesMap.values())
+        };
+    }
+
+    /**
+     * Ensure we have a valid token (Lazy Login)
+     * This handles page refreshes where config is loaded but token is missing.
+     */
+    private async ensureConnection(): Promise<void> {
+        if (!this.accessToken && this.currentConfig) {
+            console.log('🔄 Restoring FalkorDB session...');
+            const protocol = this.currentConfig.protocol === 'rediss' || this.currentConfig.protocol === 'https' ? 'https' : 'http';
+            let loginUrl = '';
+
+            if (this.currentConfig.host === 'localhost' && this.currentConfig.port === '3000' && protocol === 'http') {
+                loginUrl = '/api';
+            } else {
+                loginUrl = `${protocol}://${this.currentConfig.host}:${this.currentConfig.port}/api`;
+            }
+
+            try {
+                const token = await this.loginInternal(loginUrl, this.currentConfig);
+                if (token) {
+                    this.accessToken = token;
+                    console.log('✅ Session restored');
+                }
+            } catch (e) {
+                console.error('Failed to restore session:', e);
+                // Throwing here will bubble up as "Auth failed" to the UI
+                throw e;
+            }
+        }
     }
 
     async runQuery(cypher: string, params: Record<string, unknown> = {}): Promise<GraphResult> {
+        // Try to restore session if missing
+        await this.ensureConnection();
+
         if (!this.accessToken) {
             throw new Error('Not connected. Please login first.');
         }
@@ -168,8 +300,82 @@ export class FalkorDBAdapter implements GraphDBAdapter {
                 throw new Error(`Query failed: ${res.status} - ${err}`);
             }
 
-            const json = await res.json();
-            return this.normalizeResult(json, interpolatedCypher, params);
+            // FalkorDB Browser API returns Server-Sent Events (text/event-stream)
+            // Format:
+            // event: result
+            // data: { ... JSON ... }
+            //
+            // event: err
+            // data: Error message
+
+            const text = await res.text();
+
+            // Proper SSE Parser (handles multi-line data)
+            const lines = text.split('\n');
+            let currentEvent: string | null = null;
+            let dataBuffer: string[] = [];
+            let resultData: any = null;
+            let errorData: string | null = null;
+
+            const processEvent = () => {
+                if (!currentEvent) return;
+                const fullData = dataBuffer.join('\n'); // Unify buffer
+
+                if (currentEvent === 'err') {
+                    errorData = fullData;
+                } else if (currentEvent === 'result') {
+                    if (!fullData.trim()) return;
+                    try {
+                        resultData = JSON.parse(fullData);
+                    } catch (parseErr) {
+                        console.error('Failed to parse SSE data JSON:', fullData);
+                        throw new Error('Invalid JSON in query response');
+                    }
+                }
+
+                // Reset buffer
+                dataBuffer = [];
+                currentEvent = null;
+            };
+
+            for (const line of lines) {
+                const trimmed = line.trim(); // Be careful with trim, but usually safe for SSE structure
+
+                if (!trimmed) {
+                    // Empty line = end of event
+                    processEvent();
+                    continue;
+                }
+
+                if (trimmed.startsWith('event:')) {
+                    // If we were building an event without an empty line termination, process it now (safety)
+                    if (currentEvent) processEvent();
+                    currentEvent = trimmed.substring(6).trim();
+                } else if (trimmed.startsWith('data:')) {
+                    // Accumulate data
+                    // Note: substring(5) removes 'data:' but keeps spaces. 
+                    // Typically 'data: {' -> ' {'
+                    const content = line.substring(line.indexOf('data:') + 5).trim();
+                    dataBuffer.push(content);
+                }
+            }
+            // Process any trailing event
+            processEvent();
+
+            if (errorData) {
+                throw new Error(`FalkorDB Error: ${errorData}`);
+            }
+
+            if (!resultData) {
+                // If no result and no error, maybe it's just an empty success (e.g. CREATE)?
+                // But normally 'result' event sends statistics.
+                // Assuming empty query if nothing parsed.
+                // throw new Error('No result data received from FalkorDB');
+                // Let's return empty structure
+                return this.normalizeResult(null, interpolatedCypher, params);
+            }
+
+            return this.normalizeResult(resultData, interpolatedCypher, params);
 
         } catch (e) {
             console.error('FalkorDB Query Error:', e);
@@ -219,6 +425,15 @@ export class FalkorDBAdapter implements GraphDBAdapter {
         const rows: any[][] = response.data || []; // 'data' or 'results'? 
 
         const records: StandardRecord[] = rows.map((row) => {
+            // Handle HTTP API format where row might be an object { col: val }
+            if (!Array.isArray(row)) {
+                // If it's already an object, just use it (assuming keys match)
+                // We might need to normalization if values are special types, 
+                // but for simple create/read this is likely sufficient.
+                return row as StandardRecord;
+            }
+
+            // Handle Tuple format (Redis-like) where row is [val, val]
             const rec: StandardRecord = {};
             row.forEach((colVal, idx) => {
                 const colDef = header[idx];
@@ -332,18 +547,242 @@ export class FalkorDBAdapter implements GraphDBAdapter {
     }
 
     // Stub remaining
-    async updateNodeProperty(nodeId: string, key: string, value: unknown): Promise<void> { throw new Error('Method not implemented.'); }
-    async deleteNodeProperty(nodeId: string, key: string): Promise<void> { throw new Error('Method not implemented.'); }
-    async addNodeLabel(nodeId: string, label: string): Promise<void> { throw new Error('Method not implemented.'); }
-    async removeNodeLabel(nodeId: string, label: string): Promise<void> { throw new Error('Method not implemented.'); }
-    async expandNeighbors(nodeId: string): Promise<{ nodes: Node<NodeData>[]; edges: Edge[]; }> { return { nodes: [], edges: [] }; }
-    async createEdge(edgeId: string, sourceId: string, targetId: string, label?: string): Promise<void> { throw new Error('Method not implemented.'); }
-    async updateEdgeLabel(edgeId: string, newLabel: string): Promise<void> { throw new Error('Method not implemented.'); }
-    async deleteEdge(edgeId: string): Promise<void> { throw new Error('Method not implemented.'); }
-    async reverseRelationship(edgeId: string): Promise<{ newSource: string; newTarget: string; }> { throw new Error('Method not implemented.'); }
-    async migrateRelationship(edgeId: string, newSourceId: string, newTargetId: string): Promise<void> { throw new Error('Method not implemented.'); }
-    async getDashboard(id: string): Promise<DashboardMeta | null> { return null; }
-    async saveDashboard(id: string | null, name: string, query: string, layout: string): Promise<string> { throw new Error('Method not implemented.'); }
-    async saveDashboardsOrder(ids: string[]): Promise<void> { }
-    async deleteDashboard(id: string): Promise<void> { }
+    async updateNodeProperty(nodeId: string, key: string, value: unknown): Promise<void> {
+        // Handle string escaping roughly
+        const val = typeof value === 'string' ? `'${value.replace(/'/g, "\\'")}'` : JSON.stringify(value);
+        await this.runQuery(`MATCH (n) WHERE id(n) = ${nodeId} SET n.${key} = ${val}`);
+    }
+
+    async deleteNodeProperty(nodeId: string, key: string): Promise<void> {
+        await this.runQuery(`MATCH (n) WHERE id(n) = ${nodeId} REMOVE n.${key}`);
+    }
+
+    // Label management (FalkorDB supports labels similarly)
+    async addNodeLabel(nodeId: string, label: string): Promise<void> {
+        await this.runQuery(`MATCH (n) WHERE id(n) = ${nodeId} SET n:${label}`);
+    }
+
+    async removeNodeLabel(nodeId: string, label: string): Promise<void> {
+        await this.runQuery(`MATCH (n) WHERE id(n) = ${nodeId} REMOVE n:${label}`);
+    }
+
+    async expandNeighbors(nodeId: string): Promise<{ nodes: Node<NodeData>[]; edges: Edge[]; }> {
+        // Retrieve 1-hop neighborhood
+        const result = await this.runQuery(
+            `MATCH (n)-[r]-(m) WHERE id(n) = ${nodeId} RETURN m, r`
+        );
+        return this.processGraphResult(result);
+    }
+
+    /**
+     * V33: Fetch specific nodes and edges by ID for dashboard restore
+     */
+    async fetchGraphData(nodeIds: string[], edgeIds: string[]): Promise<{ nodes: Node<NodeData>[]; edges: Edge[] }> {
+        if (nodeIds.length === 0 && edgeIds.length === 0) {
+            return { nodes: [], edges: [] };
+        }
+
+        // FalkorDB uses integer IDs with id() function
+        // Build query with inline IDs (FalkorDB HTTP API may not support array params well)
+        const nodeIdList = nodeIds.join(', ');
+        const edgeIdList = edgeIds.map(e => `'${e}'`).join(', '); // Edge IDs are stored as string property
+
+        const query = nodeIds.length > 0
+            ? `MATCH (n)
+               WHERE id(n) IN [${nodeIdList}]
+               OPTIONAL MATCH (n)-[r]-(m)
+               WHERE r.id IN [${edgeIdList}]
+               RETURN n, r, m`
+            : `MATCH (n)-[r]-(m)
+               WHERE r.id IN [${edgeIdList}]
+               RETURN n, r, m`;
+
+        const result = await this.runQuery(query);
+        return this.processGraphResult(result);
+    }
+
+    async createEdge(edgeId: string, sourceId: string, targetId: string, label: string = 'LINK'): Promise<void> {
+        // V30: Store edge ID as property for persistence across reloads
+        // FalkorDB: MATCH (a), (b) WHERE id(a) = ... AND id(b) = ... CREATE (a)-[r:REL {id: ...}]->(b)
+        await this.runQuery(
+            `MATCH (a), (b) 
+             WHERE id(a) = ${sourceId} AND id(b) = ${targetId} 
+             CREATE (a)-[r:${label} {id: '${edgeId}'}]->(b)`
+        );
+    }
+    async updateEdgeLabel(edgeId: string, newLabel: string): Promise<void> {
+        // FalkorDB/Cypher limitation: Can't change relationship type directly.
+        // Workaround: Create new relationship with new type, copy properties, delete old.
+        // First, get the old relationship's type and properties
+        const matchResult = await this.runQuery(
+            `MATCH (a)-[r]->(b) WHERE r.id = '${edgeId}' 
+             RETURN id(a) AS sourceId, id(b) AS targetId, type(r) AS relType, properties(r) AS props`
+        );
+
+        if (matchResult.records.length === 0) {
+            throw new Error(`Edge with id ${edgeId} not found`);
+        }
+
+        const record = matchResult.records[0];
+        const sourceId = record.sourceId;
+        const targetId = record.targetId;
+        const props = record.props || {};
+
+        // Delete old relationship
+        await this.runQuery(`MATCH ()-[r]->() WHERE r.id = '${edgeId}' DELETE r`);
+
+        // Create new relationship with new label, preserving properties including id
+        const propsStr = Object.entries({ ...props, id: edgeId })
+            .map(([k, v]) => `${k}: ${typeof v === 'string' ? `'${v.replace(/'/g, "\\'")}'` : JSON.stringify(v)}`)
+            .join(', ');
+
+        await this.runQuery(
+            `MATCH (a), (b) WHERE id(a) = ${sourceId} AND id(b) = ${targetId}
+             CREATE (a)-[r:${newLabel} {${propsStr}}]->(b)`
+        );
+    }
+
+    async deleteEdge(edgeId: string): Promise<void> {
+        // V30: Edge ID is stored as property {id: '...'}
+        await this.runQuery(`MATCH ()-[r]->() WHERE r.id = '${edgeId}' DELETE r`);
+    }
+
+    async reverseRelationship(edgeId: string): Promise<{ newSource: string; newTarget: string; }> {
+        // Step 1: Get relationship info
+        const matchResult = await this.runQuery(
+            `MATCH (a)-[r]->(b) WHERE r.id = '${edgeId}' 
+             RETURN id(a) AS sourceId, id(b) AS targetId, type(r) AS relType, properties(r) AS props`
+        );
+
+        if (matchResult.records.length === 0) {
+            throw new Error(`Edge with id ${edgeId} not found`);
+        }
+
+        const record = matchResult.records[0];
+        const sourceId = record.sourceId;
+        const targetId = record.targetId;
+        const relType = record.relType;
+        const props = record.props || {};
+
+        // Step 2: Delete old relationship
+        await this.runQuery(`MATCH ()-[r]->() WHERE r.id = '${edgeId}' DELETE r`);
+
+        // Step 3: Create reversed relationship (b -> a) with same properties
+        const propsStr = Object.entries(props)
+            .map(([k, v]) => `${k}: ${typeof v === 'string' ? `'${v.replace(/'/g, "\\'")}'` : JSON.stringify(v)}`)
+            .join(', ');
+
+        await this.runQuery(
+            `MATCH (a), (b) WHERE id(a) = ${targetId} AND id(b) = ${sourceId}
+             CREATE (a)-[r:${relType} {${propsStr}}]->(b)`
+        );
+
+        // Return swapped IDs (newSource = old target, newTarget = old source)
+        return { newSource: String(targetId), newTarget: String(sourceId) };
+    }
+
+    async migrateRelationship(edgeId: string, newSourceId: string, newTargetId: string): Promise<void> {
+        // Step 1: Get old relationship info
+        const matchResult = await this.runQuery(
+            `MATCH ()-[r]->() WHERE r.id = '${edgeId}' 
+             RETURN type(r) AS relType, properties(r) AS props`
+        );
+
+        if (matchResult.records.length === 0) {
+            throw new Error(`Edge with id ${edgeId} not found`);
+        }
+
+        const record = matchResult.records[0];
+        const relType = record.relType;
+        const props = record.props || {};
+
+        // Step 2: Delete old relationship
+        await this.runQuery(`MATCH ()-[r]->() WHERE r.id = '${edgeId}' DELETE r`);
+
+        // Step 3: Create new relationship between new nodes with same properties
+        const propsStr = Object.entries(props)
+            .map(([k, v]) => `${k}: ${typeof v === 'string' ? `'${v.replace(/'/g, "\\'")}'` : JSON.stringify(v)}`)
+            .join(', ');
+
+        await this.runQuery(
+            `MATCH (a), (b) WHERE id(a) = ${newSourceId} AND id(b) = ${newTargetId}
+             CREATE (a)-[r:${relType} {${propsStr}}]->(b)`
+        );
+    }
+    async getDashboard(id: string): Promise<DashboardMeta | null> {
+        const result = await this.runQuery(
+            `MATCH (d:_GraphiveDashboard) 
+             WHERE id(d) = ${id}
+             RETURN id(d) AS id, d.name AS name, d.query AS query, d.layout AS layout, 
+                    d.createdAt AS createdAt, d.updatedAt AS updatedAt, d.order AS order`
+        );
+
+        if (result.records.length === 0) return null;
+
+        const r = result.records[0];
+        return {
+            id: String(r.id),
+            name: r.name,
+            query: r.query,
+            layout: r.layout,
+            createdAt: r.createdAt,
+            updatedAt: r.updatedAt,
+            order: r.order
+        };
+    }
+
+    async saveDashboard(id: string | null, name: string, query: string, layout: string): Promise<string> {
+        const now = new Date().toISOString();
+        // V36: Improved escaping for FalkorDB string interpolation
+        // Order matters: escape backslashes first, then quotes, then handle newlines
+        const escapeForCypher = (str: string) => str
+            .replace(/\\/g, '\\\\')     // Escape backslashes first
+            .replace(/'/g, "\\'")       // Escape single quotes
+            .replace(/\n/g, '\\n')      // Escape newlines
+            .replace(/\r/g, '\\r');     // Escape carriage returns
+
+        const safeLayout = escapeForCypher(layout);
+        const safeQuery = escapeForCypher(query);
+        const safeName = escapeForCypher(name);
+
+        if (id) {
+            // Update existing
+            await this.runQuery(
+                `MATCH (d:_GraphiveDashboard) 
+                 WHERE id(d) = ${id}
+                 SET d.name = '${safeName}', 
+                     d.query = '${safeQuery}', 
+                     d.layout = '${safeLayout}', 
+                     d.updatedAt = '${now}'`
+            );
+            return id;
+        } else {
+            // Create new
+            const result = await this.runQuery(
+                `CREATE (d:_GraphiveDashboard {
+                    name: '${safeName}',
+                    query: '${safeQuery}',
+                    layout: '${safeLayout}',
+                    createdAt: '${now}',
+                    updatedAt: '${now}',
+                    order: 999
+                 }) RETURN id(d) as id`
+            );
+            if (result.records.length > 0) return String(result.records[0].id);
+            throw new Error('Failed to create dashboard');
+        }
+    }
+
+    async saveDashboardsOrder(ids: string[]): Promise<void> {
+        // FalkorDB might not support UNWIND well with params yet via HTTP/Graph, 
+        // using sequential updates or simple UNWIND query if stringified
+        // Let's do a loop for simplicity and safety with current adapter state
+        for (let i = 0; i < ids.length; i++) {
+            await this.runQuery(`MATCH (d:_GraphiveDashboard) WHERE id(d) = ${ids[i]} SET d.order = ${i}`);
+        }
+    }
+
+    async deleteDashboard(id: string): Promise<void> {
+        await this.runQuery(`MATCH (d:_GraphiveDashboard) WHERE id(d) = ${id} DETACH DELETE d`);
+    }
 }

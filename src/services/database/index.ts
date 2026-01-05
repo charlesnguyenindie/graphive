@@ -60,6 +60,13 @@ export function isAdapterInitialized(): boolean {
     return activeAdapter !== null && activeAdapter.isInitialized();
 }
 
+/**
+ * V34: Get the ID of the active adapter ('neo4j' or 'falkordb')
+ */
+export function getAdapterId(): 'neo4j' | 'falkordb' | null {
+    return activeAdapter?.id ?? null;
+}
+
 // ============================================================
 // Exported Functions (Delegate to Active Adapter)
 // ============================================================
@@ -129,6 +136,11 @@ export async function removeNodeLabel(nodeId: string, label: string): Promise<vo
 
 export async function expandNeighbors(nodeId: string): Promise<{ nodes: Node<NodeData>[]; edges: Edge[] }> {
     return getAdapter().expandNeighbors(nodeId);
+}
+
+// V33: Fetch specific nodes/edges by ID
+export async function fetchGraphData(nodeIds: string[], edgeIds: string[]): Promise<{ nodes: Node<NodeData>[]; edges: Edge[] }> {
+    return getAdapter().fetchGraphData(nodeIds, edgeIds);
 }
 
 // --- Edge CRUD ---

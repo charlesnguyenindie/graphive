@@ -40,6 +40,8 @@ import {
     deleteDashboard as neo4jDeleteDashboard,
     saveDashboardsOrder as neo4jSaveDashboardsOrder,
     renameDashboard as neo4jRenameDashboard,
+    // V34: Get adapter type
+    getAdapterId,
 } from '../services/database';
 import { DashboardMeta } from '../services/database/types';
 import { getLayoutedElements } from '../services/layoutService';
@@ -121,7 +123,7 @@ interface GraphState {
     dashboardName: string;
     isDashboardDirty: boolean;
     loadDashboard: (id: string) => Promise<void>;
-    saveDashboard: () => Promise<void>;
+    saveDashboard: (id?: string | null, name?: string, query?: string, layout?: string) => Promise<void>;
     setIsDashboardDirty: (dirty: boolean) => void;
     setDashboardName: (name: string) => void;
     setCypherQuery: (query: string) => void;
@@ -137,6 +139,8 @@ interface GraphState {
     setShowHiddenItems: (show: boolean) => void;
     toggleShowHiddenItems: () => void;
     restoreSelected: () => void; // Unhides selected items (useful when showHiddenItems is true)
+    // V29: Reset graph on new connection
+    resetGraph: () => void;
 }
 
 // Helper: Get all descendant node IDs recursively
@@ -165,6 +169,44 @@ const initialNodes: Node<NodeData>[] = [];
 const initialEdges: Edge[] = [];
 
 let nodeIdCounter = 5;
+
+/**
+ * V34: Generate a Cypher query that fetches exactly the given nodes/edges
+ * This creates a "snapshot" query for dashboard persistence
+ */
+function generateSnapshotQuery(
+    nodeIds: string[],
+    edgeIds: string[],
+    adapter: 'neo4j' | 'falkordb' | null
+): string {
+    if (nodeIds.length === 0) {
+        return 'MATCH (n) WHERE false RETURN n'; // Empty query
+    }
+
+    if (adapter === 'falkordb') {
+        // FalkorDB uses integer IDs with id() function, edge IDs stored as string property
+        const nodeList = nodeIds.join(', ');
+        const edgeList = edgeIds.map(id => `'${id}'`).join(', ');
+
+        if (edgeIds.length === 0) {
+            return `MATCH (n) WHERE id(n) IN [${nodeList}] RETURN n`;
+        }
+        return `MATCH (n) WHERE id(n) IN [${nodeList}]
+OPTIONAL MATCH (n)-[r]-(m) WHERE r.id IN [${edgeList}] AND id(m) IN [${nodeList}]
+RETURN n, r, m`;
+    } else {
+        // Neo4j uses elementId()
+        const nodeList = nodeIds.map(id => `'${id}'`).join(', ');
+        const edgeList = edgeIds.map(id => `'${id}'`).join(', ');
+
+        if (edgeIds.length === 0) {
+            return `MATCH (n) WHERE elementId(n) IN [${nodeList}] RETURN n`;
+        }
+        return `MATCH (n) WHERE elementId(n) IN [${nodeList}]
+OPTIONAL MATCH (n)-[r]-(m) WHERE elementId(r) IN [${edgeList}] AND elementId(m) IN [${nodeList}]
+RETURN n, r, m`;
+    }
+}
 
 export const useGraphStore = create<GraphState>((set, get) => ({
     nodes: initialNodes,
@@ -290,7 +332,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
             // Sync to Neo4j
             await neo4jCreateEdge(edgeId, edge.source, edge.target, finalLabel);
-            console.log('✅ Edge synced to Neo4j:', edgeId);
+            console.log('✅ Edge synced to database:', edgeId);
 
             // Update store: remove draft status, set final label
             set({
@@ -540,6 +582,23 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
         set({ nodes: newNodes, edges: newEdges });
         useToastStore.getState().addToast('success', 'Restored items to view');
+    },
+
+    // V29: Reset graph
+    resetGraph: () => {
+        set({
+            nodes: [],
+            edges: [],
+            highlightedNodeId: null,
+            activeDashboardId: null,
+            dashboardName: 'Untitled',
+            isDashboardDirty: false,
+            // Reset query to default
+            cypherQuery: 'MATCH (n)\nOPTIONAL MATCH (n)-[r]-()\nRETURN n, r',
+            queryError: null,
+            syncError: null,
+        });
+        console.log('🧹 Graph reset (nodes/edges cleared)');
     },
 
     // V18: Smart Delete - Delete from BOTH UI and DB (renamed from deleteSelected)
@@ -1121,24 +1180,28 @@ export const useGraphStore = create<GraphState>((set, get) => ({
             // Parse layout
             let nodesLayout: Record<string, { x?: number; y?: number; w?: number; h?: number; hidden?: boolean }> = {};
             let edgesLayout: Record<string, { sourceHandle?: string | null; targetHandle?: string | null; hidden?: boolean }> = {};
+            let snapshotQuery: string | null = null;
 
             try {
                 const parsed = JSON.parse(dashboard.layout);
                 // Handle legacy format (if any) or new format
                 nodesLayout = parsed.nodes || {};
                 edgesLayout = parsed.edges || {};
+                snapshotQuery = parsed.snapshotQuery || null; // V35: Hidden snapshot query
             } catch { /* empty layout */ }
 
-            // Set dashboard metadata
+            // Set dashboard metadata (V35: user's query displayed in QueryPanel)
             set({
                 activeDashboardId: id,
                 dashboardName: dashboard.name,
-                cypherQuery: dashboard.query,
+                cypherQuery: dashboard.query, // V35: User's original query
                 isDashboardDirty: false,
             });
 
-            // Execute the query
-            const result = await neo4jExecuteQuery(dashboard.query);
+            // V35: Execute the hidden snapshot query (or fallback to user's query for legacy dashboards)
+            const queryToExecute = snapshotQuery || dashboard.query;
+            const result = await neo4jExecuteQuery(queryToExecute);
+
             const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
                 result.nodes,
                 result.edges
@@ -1204,60 +1267,80 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         }
     },
 
-    saveDashboard: async () => {
-        const { activeDashboardId, dashboardName, cypherQuery, nodes, edges } = get();
+    saveDashboard: async (idArg?, nameArg?, queryArg?, layoutArg?) => {
+        const state = get();
 
-        // Build layout object from current node positions/dimensions AND edge handles (V22)
-        const layout: {
-            nodes: Record<string, { x: number; y: number; w?: number; h?: number; hidden?: boolean }>;
-            edges: Record<string, { sourceHandle?: string | null; targetHandle?: string | null; hidden?: boolean }>;
-        } = { nodes: {}, edges: {} };
+        // V32: Use provided args OR fallback to current state
+        // This enables DashboardPanel to create new dashboards by passing null ID
+        const targetId = idArg !== undefined ? idArg : state.activeDashboardId;
+        const targetName = nameArg || state.dashboardName;
+        const targetQuery = queryArg || state.cypherQuery;
 
-        for (const node of nodes) {
-            // Get dimensions from measured (actual rendered size) or style/props
-            const w = node.measured?.width ?? node.width ?? (typeof node.style?.width === 'number' ? node.style.width : undefined);
-            const h = node.measured?.height ?? node.height ?? (typeof node.style?.height === 'number' ? node.style.height : undefined);
+        // Build layout if not provided
+        let targetLayout = layoutArg;
+        if (!targetLayout) {
+            const { nodes, edges } = state;
+            const layout: {
+                nodes: Record<string, { x: number; y: number; w?: number; h?: number; hidden?: boolean }>;
+                edges: Record<string, { sourceHandle?: string | null; targetHandle?: string | null; hidden?: boolean }>;
+            } = { nodes: {}, edges: {} };
 
-            layout.nodes[node.id] = {
-                x: node.position.x,
-                y: node.position.y,
-                w,
-                h,
-                hidden: node.hidden, // V23
-            };
-        }
+            for (const node of nodes) {
+                const w = node.measured?.width ?? node.width ?? (typeof node.style?.width === 'number' ? node.style.width : undefined);
+                const h = node.measured?.height ?? node.height ?? (typeof node.style?.height === 'number' ? node.style.height : undefined);
 
-        // V22: Save edge handles
-        for (const edge of edges) {
-            // V23: Save hidden state for all edges, or handles if present
-            if (edge.sourceHandle || edge.targetHandle || edge.hidden) {
-                layout.edges[edge.id] = {
-                    sourceHandle: edge.sourceHandle,
-                    targetHandle: edge.targetHandle,
-                    hidden: edge.hidden // V23
+                layout.nodes[node.id] = {
+                    x: node.position.x,
+                    y: node.position.y,
+                    w,
+                    h,
+                    hidden: node.hidden,
                 };
             }
+
+            for (const edge of edges) {
+                if (edge.sourceHandle || edge.targetHandle || edge.hidden) {
+                    layout.edges[edge.id] = {
+                        sourceHandle: edge.sourceHandle,
+                        targetHandle: edge.targetHandle,
+                        hidden: edge.hidden
+                    };
+                }
+            }
+
+            // V35: Generate snapshot query and store it inside layout (hidden from user)
+            const nodeIds = nodes.map(n => n.id);
+            const edgeIds = edges.map(e => e.id);
+            const snapshotQuery = generateSnapshotQuery(nodeIds, edgeIds, getAdapterId());
+            (layout as any).snapshotQuery = snapshotQuery;
+
+            targetLayout = JSON.stringify(layout);
         }
 
         set({ isSyncing: true });
 
         try {
             const newId = await neo4jSaveDashboard(
-                activeDashboardId,
-                dashboardName,
-                cypherQuery,
-                JSON.stringify(layout)
+                targetId,
+                targetName,
+                state.cypherQuery, // V35: Save user's query (displayed in QueryPanel)
+                targetLayout       // Contains snapshotQuery for loading
             );
 
-            set({
-                activeDashboardId: newId,
-                dashboardName: dashboardName, // Explicitly set name to ensure sync
-                isDashboardDirty: false,
-                isSyncing: false,
-            });
+            // V32: Update state if we created a new dashboard OR updated the active one
+            if (!targetId || targetId === state.activeDashboardId) {
+                set({
+                    activeDashboardId: newId,
+                    dashboardName: targetName,
+                    isDashboardDirty: false,
+                    isSyncing: false,
+                });
+            } else {
+                set({ isSyncing: false });
+            }
 
-            console.log('💾 Dashboard saved:', dashboardName);
-            useToastStore.getState().addToast('success', `Dashboard "${dashboardName}" saved`);
+            console.log('💾 Dashboard saved:', targetName);
+            useToastStore.getState().addToast('success', `Dashboard "${targetName}" saved`);
         } catch (error) {
             console.error('❌ Failed to save dashboard:', error);
             set({ isSyncing: false });
@@ -1376,28 +1459,33 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
         set({ isRestoring: true, isLoading: true });
 
-        // Priority 1: Check Neo4j for saved dashboards
-        console.log('📊 Checking Neo4j for saved dashboards...');
-        try {
-            const list = await neo4jGetDashboards();
-            console.log('Found', list.length, 'dashboards');
+        // Priority 1: Check database for saved dashboards
+        // Only if we have an active connection
+        if (isDriverInitialized()) {
+            console.log('📊 Checking database for saved dashboards...');
+            try {
+                const list = await neo4jGetDashboards();
+                console.log('Found', list.length, 'dashboards');
 
-            if (list.length > 0) {
-                // Load the first dashboard (by order)
-                console.log('Loading first dashboard:', list[0].id, list[0].name);
+                if (list.length > 0) {
+                    // Load the first dashboard (by order)
+                    console.log('Loading first dashboard:', list[0].id, list[0].name);
 
-                // Clear stale LocalStorage since we're loading fresh from Neo4j
-                localStorage.removeItem('graphive_session');
+                    // Clear stale LocalStorage since we're loading fresh from Neo4j
+                    localStorage.removeItem('graphive_session');
 
-                await get().loadDashboard(list[0].id);
-                return;
+                    await get().loadDashboard(list[0].id);
+                    return;
+                }
+            } catch (e) {
+                console.error('Failed to fetch dashboards from database:', e);
             }
-        } catch (e) {
-            console.error('Failed to fetch dashboards from Neo4j:', e);
+        } else {
+            console.log('🔌 Database not connected, skipping dashboard fetch.');
         }
 
         // Priority 2: No saved dashboards - try LocalStorage (unsaved work)
-        console.log('📦 No dashboards in Neo4j, checking LocalStorage...');
+        console.log('📦 No dashboards in database, checking LocalStorage...');
         const savedSession = localStorage.getItem('graphive_session');
 
         if (savedSession) {

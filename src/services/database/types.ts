@@ -108,6 +108,8 @@ export interface GraphDBAdapter {
     addNodeLabel(nodeId: string, label: string): Promise<void>;
     removeNodeLabel(nodeId: string, label: string): Promise<void>;
     expandNeighbors(nodeId: string): Promise<{ nodes: Node<NodeData>[]; edges: Edge[] }>;
+    // V33: Fetch specific nodes/edges by ID (for dashboard restore without query execution)
+    fetchGraphData(nodeIds: string[], edgeIds: string[]): Promise<{ nodes: Node<NodeData>[]; edges: Edge[] }>;
 
     // --- Edge CRUD ---
     createEdge(edgeId: string, sourceId: string, targetId: string, label?: string): Promise<void>;

@@ -504,6 +504,42 @@ export class Neo4jAdapter implements GraphDBAdapter {
         }
     }
 
+    /**
+     * V33: Fetch specific nodes and edges by ID for dashboard restore
+     */
+    async fetchGraphData(nodeIds: string[], edgeIds: string[]): Promise<{ nodes: Node<NodeData>[]; edges: Edge[] }> {
+        if (nodeIds.length === 0 && edgeIds.length === 0) {
+            return { nodes: [], edges: [] };
+        }
+
+        const drv = this.getDriver();
+        const session: Session = drv.session();
+
+        try {
+            console.log('📦 Fetching graph data by IDs:', { nodeIds: nodeIds.length, edgeIds: edgeIds.length });
+
+            // Build query to fetch nodes by elementId and edges by their id property
+            const result = await session.run(
+                `MATCH (n)
+                 WHERE elementId(n) IN $nodeIds OR n.id IN $nodeIds
+                 OPTIONAL MATCH (n)-[r]-(m)
+                 WHERE r.id IN $edgeIds OR elementId(r) IN $edgeIds
+                 RETURN n, r, m`,
+                { nodeIds, edgeIds }
+            );
+
+            const transformed = transformNeo4jData(result.records);
+            console.log('✅ Fetched graph data:', {
+                nodes: transformed.nodes.length,
+                edges: transformed.edges.length
+            });
+
+            return transformed;
+        } finally {
+            await session.close();
+        }
+    }
+
     // ============================================================
     // Edge CRUD (Phase 2C)
     // ============================================================

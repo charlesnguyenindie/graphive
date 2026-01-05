@@ -13,6 +13,7 @@ import {
     getDefaultPort,
 } from '../config/connection';
 import { testConnection } from '../services/database';
+import { useGraphStore } from '../store/useGraphStore';
 import './ConnectionModal.css';
 
 // Provider options
@@ -79,18 +80,25 @@ export function ConnectionModal() {
     useEffect(() => {
         const lowerHost = host.toLowerCase();
 
-        if (lowerHost.includes('localhost') || lowerHost.includes('127.0.0.1')) {
-            // Local development → bolt
-            setProtocol('bolt');
-        } else if (
-            lowerHost.includes('aura') ||
-            lowerHost.includes('.neo4j.io') ||
-            lowerHost.includes('databases.neo4j')
-        ) {
-            // Aura cloud → neo4j+s
-            setProtocol('neo4j+s');
+        // Only auto-switch for Neo4j context or if protocol is invalid
+        if (provider === 'neo4j') {
+            if (lowerHost.includes('localhost') || lowerHost.includes('127.0.0.1')) {
+                // Local development → bolt
+                if (protocol !== 'bolt' && protocol !== 'http') {
+                    // Only switch if not already commonly set? 
+                    // Actually better to just disable this aggressive overriding for now.
+                    // setProtocol('bolt');
+                }
+            } else if (
+                lowerHost.includes('aura') ||
+                lowerHost.includes('.neo4j.io') ||
+                lowerHost.includes('databases.neo4j')
+            ) {
+                // Aura cloud → neo4j+s
+                setProtocol('neo4j+s');
+            }
         }
-    }, [host]);
+    }, [host, provider]);
 
     // Auto-fill port when protocol or provider changes
     useEffect(() => {
@@ -131,6 +139,9 @@ export function ConnectionModal() {
             if (result === true) {
                 // Success - save connection
                 setConnection(config);
+
+                // V29: Clear potential previous graph data
+                useGraphStore.getState().resetGraph();
             } else {
                 // Error message returned
                 setTestError(result);
@@ -260,6 +271,20 @@ export function ConnectionModal() {
                                 The FalkorDB Browser API requires a password. Check your Docker settings.
                             </p>
                         )}
+                    </div>
+
+                    {/* Database / Graph Name */}
+                    <div className="connection-modal__field">
+                        <label className="connection-modal__label">
+                            {provider === 'neo4j' ? 'Database Name' : 'Graph Key'} <span className="connection-modal__optional">(Optional)</span>
+                        </label>
+                        <input
+                            type="text"
+                            className="connection-modal__input"
+                            placeholder={provider === 'neo4j' ? 'neo4j' : 'Graphive'}
+                            value={database}
+                            onChange={(e) => setDatabase(e.target.value)}
+                        />
                     </div>
 
                     {/* Mixed Content Warning */}

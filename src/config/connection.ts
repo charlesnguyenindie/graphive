@@ -39,7 +39,7 @@ export const DEFAULT_PORTS: Record<Protocol, string> = {
 // Protocols available for each provider
 export const PROVIDER_PROTOCOLS: Record<Provider, Protocol[]> = {
     neo4j: ['bolt', 'bolt+s', 'neo4j', 'neo4j+s', 'http', 'https'],
-    falkordb: ['http', 'https', 'redis', 'rediss'],
+    falkordb: ['http', 'https'],
 };
 
 // Helper: Get default port based on provider + protocol

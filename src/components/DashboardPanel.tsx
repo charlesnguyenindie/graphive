@@ -99,7 +99,9 @@ const styles: Record<string, React.CSSProperties> = {
         justifyContent: 'space-between',
         padding: spacing.sm,
         borderRadius: radii.sm,
-        border: `1px solid ${colors.borderDefault}`,
+        borderWidth: '1px',
+        borderStyle: 'solid',
+        borderColor: colors.borderDefault,
         cursor: 'pointer',
         transition: transitions.fast,
     },
@@ -285,10 +287,17 @@ export function DashboardPanel() {
 
     const handleCreate = useCallback(async () => {
         if (!createName.trim()) return;
-        await createDashboardAsCopy(createName);
+        // CREATE NEW with improved default query
+        await saveDashboard(
+            null,
+            createName,
+            'MATCH (n) OPTIONAL MATCH (n)-[r]-() RETURN n, r',
+            JSON.stringify({})
+        );
         setCreateName('');
         fetchDashboards();
-    }, [createName, createDashboardAsCopy, fetchDashboards]);
+    }, [createName, saveDashboard, fetchDashboards]);
+
 
     const onDragStart = (e: React.DragEvent, id: string) => {
         setDraggedId(id);

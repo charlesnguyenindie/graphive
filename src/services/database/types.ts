@@ -48,6 +48,38 @@ export interface DashboardMeta {
 }
 
 // ============================================================
+// Data Abstraction Layer (V24)
+// ============================================================
+
+export interface StandardRecord {
+    [key: string]: any; // Primitives, or arrays/objects of primitives
+}
+
+export interface GraphQuerySummary {
+    query: string;
+    params?: Record<string, any>;
+    counters: {
+        nodesCreated: number;
+        nodesDeleted: number;
+        relationshipsCreated: number;
+        relationshipsDeleted: number;
+        propertiesSet: number;
+        labelsAdded: number;
+        labelsRemoved: number;
+        indexesAdded: number;
+        indexesRemoved: number;
+        constraintsAdded: number;
+        constraintsRemoved: number;
+    };
+    executionTimeMs?: number;
+}
+
+export interface GraphResult {
+    records: StandardRecord[];
+    summary: GraphQuerySummary;
+}
+
+// ============================================================
 // Graph Database Adapter Interface
 // ============================================================
 
@@ -63,7 +95,7 @@ export interface GraphDBAdapter {
 
     // --- Query Execution ---
     executeQuery(cypherQuery: string): Promise<{ nodes: Node<NodeData>[]; edges: Edge[] }>;
-    runQuery<T = unknown>(cypher: string, params?: Record<string, unknown>): Promise<T | null>;
+    runQuery(cypher: string, params?: Record<string, unknown>): Promise<GraphResult>;
 
     // --- Node CRUD ---
     createNode(name: string): Promise<string>; // Returns node ID

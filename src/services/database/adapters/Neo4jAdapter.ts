@@ -6,7 +6,7 @@
 import neo4j, { Driver, Session, Record as Neo4jRecord, Node as Neo4jNode, Relationship } from 'neo4j-driver';
 import { Node, Edge } from '@xyflow/react';
 import { NodeData } from '../../../store/useGraphStore';
-import { ConnectionConfig, Protocol, DEFAULT_PORTS, GraphDBAdapter, DashboardMeta } from '../types';
+import { ConnectionConfig, Protocol, DEFAULT_PORTS, GraphDBAdapter, DashboardMeta, GraphResult, StandardRecord, GraphQuerySummary } from '../types';
 
 // ============================================================
 // Connection Helpers
@@ -203,24 +203,109 @@ export class Neo4jAdapter implements GraphDBAdapter {
      * Generic query runner for CRUD operations
      * Handles transaction pooling and error logging
      */
-    async runQuery<T = unknown>(
+    /**
+     * Generic query runner for CRUD operations
+     * Returns standardized GraphResult
+     */
+    async runQuery(
         cypher: string,
         params: Record<string, unknown> = {}
-    ): Promise<T | null> {
+    ): Promise<GraphResult> {
         const drv = this.getDriver();
         const session: Session = drv.session();
 
         try {
             console.log('🔄 Neo4j runQuery:', { cypher, params });
             const result = await session.run(cypher, params);
-            console.log('✅ Neo4j query success:', result.summary.counters);
-            return result as T;
+            const normalized = this.normalizeResult(result, cypher, params);
+            console.log('✅ Neo4j query success:', normalized.summary.counters);
+            return normalized;
         } catch (error) {
             console.error('❌ Neo4j query failed:', error);
             throw error;
         } finally {
             await session.close();
         }
+    }
+
+    /**
+     * Normalize Neo4j driver result to GraphResult
+     */
+    private normalizeResult(result: any, query: string, params?: any): GraphResult {
+        const records: StandardRecord[] = result.records.map((record: any) => {
+            const row: StandardRecord = {};
+            record.keys.forEach((key: string) => {
+                const val = record.get(key);
+                row[key] = this.normalizeValue(val);
+            });
+            return row;
+        });
+
+        // Safe counter extraction (Neo4j driver dependent)
+        // Counters are usually Integer objects or numbers, NOT functions in v4/v5
+        const getCount = (val: any) => {
+            if (!val) return 0;
+            if (neo4j.isInt(val)) return val.toNumber();
+            return Number(val);
+        };
+
+        const c = result.summary.counters;
+        const counters = {
+            nodesCreated: getCount(c.nodesCreated),
+            nodesDeleted: getCount(c.nodesDeleted),
+            relationshipsCreated: getCount(c.relationshipsCreated),
+            relationshipsDeleted: getCount(c.relationshipsDeleted),
+            propertiesSet: getCount(c.propertiesSet),
+            labelsAdded: getCount(c.labelsAdded),
+            labelsRemoved: getCount(c.labelsRemoved),
+            indexesAdded: getCount(c.indexesAdded),
+            indexesRemoved: getCount(c.indexesRemoved),
+            constraintsAdded: getCount(c.constraintsAdded),
+            constraintsRemoved: getCount(c.constraintsRemoved),
+        };
+
+        return {
+            records,
+            summary: {
+                query,
+                params,
+                counters
+            }
+        };
+    }
+
+    private normalizeValue(val: any): any {
+        if (val === null || val === undefined) return val;
+        if (neo4j.isInt(val)) return val.toNumber();
+        if (Array.isArray(val)) return val.map(v => this.normalizeValue(v));
+        if (val instanceof Neo4jNode || (val.labels && val.properties)) {
+            // Normalize Node
+            return {
+                id: val.elementId || String(val.identity),
+                labels: val.labels,
+                properties: this.normalizeProperties(val.properties)
+            };
+        }
+        if (val instanceof Relationship || (val.type && val.startNodeElementId)) {
+            // Normalize Relationship
+            return {
+                id: val.elementId || String(val.identity),
+                type: val.type,
+                startNodeId: val.startNodeElementId || String(val.start),
+                endNodeId: val.endNodeElementId || String(val.end),
+                properties: this.normalizeProperties(val.properties)
+            };
+        }
+        // TODO: Path, Point, etc. if needed
+        return val;
+    }
+
+    private normalizeProperties(props: any): any {
+        const norm: any = {};
+        for (const key in props) {
+            norm[key] = this.normalizeValue(props[key]);
+        }
+        return norm;
     }
 
     // ============================================================
@@ -231,14 +316,14 @@ export class Neo4jAdapter implements GraphDBAdapter {
      * Create a node in Neo4j and return its elementId
      */
     async createNode(name: string): Promise<string> {
-        const result = await this.runQuery<{ records: Neo4jRecord[] }>(
+        const result = await this.runQuery(
             'CREATE (n {name: $name}) RETURN elementId(n) AS id',
             { name }
         );
 
-        // Extract ID from the result
+        // Extract ID from the result (standard record access)
         if (result && result.records && result.records.length > 0) {
-            return result.records[0].get('id');
+            return result.records[0].id; // Direct access, no .get()
         }
         throw new Error('Failed to create node: No ID returned');
     }

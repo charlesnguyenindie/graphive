@@ -3,7 +3,7 @@
  * V16: Manages the active database adapter and exposes a unified API
  */
 
-import { GraphDBAdapter, ConnectionConfig, DashboardMeta } from './types';
+import { ConnectionConfig, DashboardMeta, GraphDBAdapter, GraphResult } from './types';
 import { Neo4jAdapter } from './adapters/Neo4jAdapter';
 import { Node, Edge } from '@xyflow/react';
 import { NodeData } from '../../store/useGraphStore';
@@ -92,8 +92,8 @@ export async function executeQuery(cypherQuery: string): Promise<{ nodes: Node<N
     return getAdapter().executeQuery(cypherQuery);
 }
 
-export async function runQuery<T = unknown>(cypher: string, params?: Record<string, unknown>): Promise<T | null> {
-    return getAdapter().runQuery<T>(cypher, params);
+export async function runQuery(cypher: string, params?: Record<string, unknown>): Promise<GraphResult> {
+    return getAdapter().runQuery(cypher, params);
 }
 
 // --- Node CRUD ---

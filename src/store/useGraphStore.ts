@@ -56,6 +56,7 @@ export interface NodeData {
 export interface EdgeData {
     label?: string;
     isEditing?: boolean;
+    isDraft?: boolean; // V20: Draft edges not yet persisted
     [key: string]: unknown;
 }
 
@@ -78,7 +79,12 @@ interface GraphState {
     discardDraftNode: (nodeId: string) => void;  // V13
     updateNodeLabel: (id: string, label: string) => void;
     toggleCollapse: (nodeId: string) => void;
-    deleteSelected: () => void;
+    // V18: Smart Delete - renamed for clarity
+    deleteSelected: () => void;  // Legacy alias for deleteSelectedFromDB
+    deleteSelectedFromDB: () => void;  // Deletes from UI AND Neo4j
+    removeSelectedFromUI: () => void;  // Removes from UI only (no DB sync)
+    isDeleteModalOpen: boolean;
+    setDeleteModalOpen: (isOpen: boolean) => void;
     onReconnect: (oldEdge: Edge, newConnection: Connection) => void;
     setHighlightedNode: (nodeId: string | null) => void;
     // Performance: Direct setters for batch updates
@@ -91,6 +97,9 @@ interface GraphState {
     flipEdge: (edgeId: string) => Promise<void>;
     setEdgeEditing: (edgeId: string, isEditing: boolean) => void;
     updateEdgeLabel: (edgeId: string, label: string) => void;
+    // V20: Edge Drafting
+    commitDraftEdge: (edgeId: string, label: string) => Promise<void>;
+    discardDraftEdge: (edgeId: string) => void;
     // V5: Neo4j actions
     // V17: Added additive parameter to merge results instead of replacing
     executeNeo4jQuery: (cypherQuery: string, additive?: boolean) => Promise<void>;
@@ -123,6 +132,11 @@ interface GraphState {
     createDashboardAsCopy: (name: string) => Promise<void>;
     reorderDashboards: (ids: string[]) => Promise<void>;
     renameDashboard: (id: string, name: string) => Promise<void>;
+    // V19: Visibility Manager
+    showHiddenItems: boolean;
+    setShowHiddenItems: (show: boolean) => void;
+    toggleShowHiddenItems: () => void;
+    restoreSelected: () => void; // Unhides selected items (useful when showHiddenItems is true)
 }
 
 // Helper: Get all descendant node IDs recursively
@@ -169,6 +183,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     isDashboardDirty: false,
     cypherQuery: 'MATCH (n)\nOPTIONAL MATCH (n)-[r]-()\nRETURN n, r',
     isRestoring: false,
+    // V18: Smart Delete modal state
+    isDeleteModalOpen: false,
+    // V19: Visibility Manager
+    showHiddenItems: false,
 
     onNodesChange: (changes) => {
         // V15: Detect position or dimension changes for dirty tracking
@@ -242,35 +260,66 @@ export const useGraphStore = create<GraphState>((set, get) => ({
             source: connection.source,
             target: connection.target,
             type: 'custom',
-            data: { label: '' },  // V13: Empty default label
+            data: {
+                label: '', // V13: Empty default label
+                isDraft: true, // V20: Start as draft
+                isEditing: true // V20: Auto-focus input
+            },
         };
 
-        console.log('📥 Store onConnect:', { connection, newEdge });
+        console.log('📥 Store onConnect (Draft):', { connection, newEdge });
 
-        // V8: Optimistic UI - apply immediately
+        // V20: Add local draft edge only - do NOT sync to Neo4j yet
         set({
             edges: addEdge(newEdge as Edge, get().edges),
-            isSyncing: true,
         });
+    },
 
-        // V8: Sync to Neo4j in background
-        if (connection.source && connection.target) {
-            neo4jCreateEdge(edgeId, connection.source, connection.target, 'LINK')
-                .then(() => {
-                    console.log('✅ Edge synced to Neo4j:', edgeId);
-                    set({ isSyncing: false });
-                })
-                .catch((error) => {
-                    console.error('❌ Failed to sync edge to Neo4j:', error);
-                    // Rollback: remove the edge from UI
-                    set({
-                        edges: get().edges.filter((e) => e.id !== edgeId),
-                        isSyncing: false,
-                        syncError: error instanceof Error ? error.message : 'Failed to create edge',
-                    });
-                    useToastStore.getState().addToast('error', 'Failed to create connection');
-                });
+    // V20: Commit draft edge -> Sync to Neo4j
+    commitDraftEdge: async (edgeId: string, label: string) => {
+        const { edges } = get();
+        const edge = edges.find(e => e.id === edgeId);
+        if (!edge) return;
+
+        console.log('💾 Committing draft edge:', { edgeId, label });
+        set({ isSyncing: true, syncError: null });
+
+        try {
+            // Default label if empty
+            const finalLabel = label.trim() || 'LINK';
+
+            // Sync to Neo4j
+            await neo4jCreateEdge(edgeId, edge.source, edge.target, finalLabel);
+            console.log('✅ Edge synced to Neo4j:', edgeId);
+
+            // Update store: remove draft status, set final label
+            set({
+                edges: edges.map(e => e.id === edgeId ? {
+                    ...e,
+                    data: { ...e.data, isDraft: false, isEditing: false, label: finalLabel }
+                } : e),
+                isSyncing: false
+            });
+            useToastStore.getState().addToast('success', 'Connection saved');
+        } catch (error) {
+            console.error('❌ Failed to commit edge:', error);
+            set({
+                isSyncing: false,
+                syncError: error instanceof Error ? error.message : 'Failed to save connection'
+            });
+            useToastStore.getState().addToast('error', 'Failed to save connection');
+            // We do NOT remove the edge, giving user chance to retry? 
+            // Or maybe we should keep it in draft mode?
+            // Current user request implies "disappear on reload" bug was due to lack of sync.
+            // If sync fails, we should probably let them try again.
         }
+    },
+
+    // V20: Discard draft edge -> Remove from store
+    discardDraftEdge: (edgeId: string) => {
+        set({
+            edges: get().edges.filter(e => e.id !== edgeId)
+        });
     },
 
     // V13: Create draft node (no Neo4j call until committed)
@@ -448,7 +497,53 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         set({ nodes: updatedNodes, edges: updatedEdges });
     },
 
-    deleteSelected: () => {
+    // V18: Smart Delete - UI-only removal (Soft Hide for V19)
+    removeSelectedFromUI: () => {
+        const { nodes, edges } = get();
+
+        // V19: Set hidden=true instead of removing
+        const newNodes = nodes.map((node) =>
+            node.selected
+                ? { ...node, hidden: true, selected: false }
+                : node
+        );
+
+        const newEdges = edges.map((edge) =>
+            edge.selected
+                ? { ...edge, hidden: true, selected: false }
+                : edge
+        );
+
+        set({ nodes: newNodes, edges: newEdges, isDeleteModalOpen: false });
+        useToastStore.getState().addToast('info', 'Hidden from view. Enable "Show Hidden" to restore.');
+    },
+
+    // V19: Visibility Manager Actions
+    setShowHiddenItems: (show) => set({ showHiddenItems: show }),
+
+    toggleShowHiddenItems: () => set((state) => ({ showHiddenItems: !state.showHiddenItems })),
+
+    restoreSelected: () => {
+        const { nodes, edges } = get();
+
+        const newNodes = nodes.map((node) =>
+            node.selected && node.hidden
+                ? { ...node, hidden: false, selected: false }
+                : node
+        );
+
+        const newEdges = edges.map((edge) =>
+            edge.selected && edge.hidden
+                ? { ...edge, hidden: false, selected: false }
+                : edge
+        );
+
+        set({ nodes: newNodes, edges: newEdges });
+        useToastStore.getState().addToast('success', 'Restored items to view');
+    },
+
+    // V18: Smart Delete - Delete from BOTH UI and DB (renamed from deleteSelected)
+    deleteSelectedFromDB: () => {
         const { nodes, edges } = get();
 
         // Store original state for rollback
@@ -474,7 +569,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         );
 
         // V8: Optimistic UI - apply immediately
-        set({ nodes: remainingNodes, edges: remainingEdges, isSyncing: true });
+        set({ nodes: remainingNodes, edges: remainingEdges, isSyncing: true, isDeleteModalOpen: false });
 
         // V8: Sync deletions to Neo4j in background
         const deletePromises: Promise<void>[] = [];
@@ -515,6 +610,16 @@ export const useGraphStore = create<GraphState>((set, get) => ({
                 });
                 useToastStore.getState().addToast('error', 'Delete failed - changes reverted');
             });
+    },
+
+    // V18: Backward compatible alias
+    deleteSelected: () => {
+        get().deleteSelectedFromDB();
+    },
+
+    // V18: Modal control
+    setDeleteModalOpen: (isOpen) => {
+        set({ isDeleteModalOpen: isOpen });
     },
 
     // V13: Edge re-parenting with optimistic UI and persistence
@@ -690,21 +795,28 @@ export const useGraphStore = create<GraphState>((set, get) => ({
                 const newEdges = result.edges.filter(e => !existingEdgeIds.has(e.id));
 
                 if (newNodes.length > 0 || newEdges.length > 0) {
-                    // Layout only the new nodes, placing them after existing ones
-                    const layoutedNew = getLayoutedElements(newNodes, newEdges);
+                    let finalNewNodes = newNodes;
+                    let finalNewEdges = newEdges;
 
-                    // Offset new nodes to avoid overlap with existing
-                    const maxX = currentNodes.length > 0
-                        ? Math.max(...currentNodes.map(n => n.position.x)) + 300
-                        : 0;
-                    const offsetNewNodes = layoutedNew.nodes.map(n => ({
-                        ...n,
-                        position: { x: n.position.x + maxX, y: n.position.y }
-                    }));
+                    // Only run layout if we have new nodes to position
+                    if (newNodes.length > 0) {
+                        const layoutedNew = getLayoutedElements(newNodes, newEdges);
+
+                        // Offset new nodes to avoid overlap with existing
+                        const maxX = currentNodes.length > 0
+                            ? Math.max(...currentNodes.map(n => n.position.x)) + 300
+                            : 0;
+
+                        finalNewNodes = layoutedNew.nodes.map(n => ({
+                            ...n,
+                            position: { x: n.position.x + maxX, y: n.position.y }
+                        }));
+                        finalNewEdges = layoutedNew.edges;
+                    }
 
                     set({
-                        nodes: [...currentNodes, ...offsetNewNodes],
-                        edges: [...currentEdges, ...layoutedNew.edges],
+                        nodes: [...currentNodes, ...finalNewNodes],
+                        edges: [...currentEdges, ...finalNewEdges],
                         isLoading: false,
                     });
                 } else {
@@ -1007,10 +1119,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
             }
 
             // Parse layout
-            let layout: Record<string, { x?: number; y?: number; w?: number; h?: number }> = {};
+            let nodesLayout: Record<string, { x?: number; y?: number; w?: number; h?: number }> = {};
+            let edgesLayout: Record<string, { sourceHandle?: string | null; targetHandle?: string | null }> = {};
+
             try {
                 const parsed = JSON.parse(dashboard.layout);
-                layout = parsed.nodes || {};
+                // Handle legacy format (if any) or new format
+                nodesLayout = parsed.nodes || {};
+                edgesLayout = parsed.edges || {};
             } catch { /* empty layout */ }
 
             // Set dashboard metadata
@@ -1030,7 +1146,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
             // Apply saved positions and dimensions from layout
             const nodesWithLayout = layoutedNodes.map(node => {
-                const saved = layout[node.id];
+                const saved = nodesLayout[node.id];
                 if (saved) {
                     return {
                         ...node,
@@ -1051,9 +1167,22 @@ export const useGraphStore = create<GraphState>((set, get) => ({
                 return node;
             });
 
+            // V22: Restore edge handles from layout
+            const edgesWithLayout = layoutedEdges.map(edge => {
+                const saved = edgesLayout[edge.id];
+                if (saved) {
+                    return {
+                        ...edge,
+                        sourceHandle: saved.sourceHandle ?? edge.sourceHandle,
+                        targetHandle: saved.targetHandle ?? edge.targetHandle,
+                    };
+                }
+                return edge;
+            });
+
             set({
                 nodes: nodesWithLayout,
-                edges: layoutedEdges,
+                edges: edgesWithLayout, // V22 Use edges with restored handles
                 isLoading: false,
                 isDashboardDirty: false,
                 // Keep isRestoring true slightly longer to ignore initial measurement events
@@ -1074,10 +1203,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     },
 
     saveDashboard: async () => {
-        const { activeDashboardId, dashboardName, cypherQuery, nodes } = get();
+        const { activeDashboardId, dashboardName, cypherQuery, nodes, edges } = get();
 
-        // Build layout object from current node positions and dimensions
-        const layout: { nodes: Record<string, { x: number; y: number; w?: number; h?: number }> } = { nodes: {} };
+        // Build layout object from current node positions/dimensions AND edge handles (V22)
+        const layout: {
+            nodes: Record<string, { x: number; y: number; w?: number; h?: number }>;
+            edges: Record<string, { sourceHandle?: string | null; targetHandle?: string | null }>;
+        } = { nodes: {}, edges: {} };
+
         for (const node of nodes) {
             // Get dimensions from measured (actual rendered size) or style/props
             const w = node.measured?.width ?? node.width ?? (typeof node.style?.width === 'number' ? node.style.width : undefined);
@@ -1089,6 +1222,16 @@ export const useGraphStore = create<GraphState>((set, get) => ({
                 w,
                 h,
             };
+        }
+
+        // V22: Save edge handles
+        for (const edge of edges) {
+            if (edge.sourceHandle || edge.targetHandle) {
+                layout.edges[edge.id] = {
+                    sourceHandle: edge.sourceHandle,
+                    targetHandle: edge.targetHandle
+                };
+            }
         }
 
         set({ isSyncing: true });
@@ -1118,14 +1261,28 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     },
 
     createDashboardAsCopy: async (name: string) => {
-        const { cypherQuery, nodes } = get();
+        const { cypherQuery, nodes, edges } = get();
 
         // Build layout
-        const layout: { nodes: Record<string, { x: number; y: number; w?: number; h?: number }> } = { nodes: {} };
+        const layout: {
+            nodes: Record<string, { x: number; y: number; w?: number; h?: number }>;
+            edges: Record<string, { sourceHandle?: string | null; targetHandle?: string | null }>;
+        } = { nodes: {}, edges: {} };
+
         for (const node of nodes) {
             const w = node.measured?.width ?? node.width ?? (typeof node.style?.width === 'number' ? node.style.width : undefined);
             const h = node.measured?.height ?? node.height ?? (typeof node.style?.height === 'number' ? node.style.height : undefined);
             layout.nodes[node.id] = { x: node.position.x, y: node.position.y, w, h };
+        }
+
+        // V22: Copy edge handles
+        for (const edge of edges) {
+            if (edge.sourceHandle || edge.targetHandle) {
+                layout.edges[edge.id] = {
+                    sourceHandle: edge.sourceHandle,
+                    targetHandle: edge.targetHandle
+                };
+            }
         }
 
         set({ isSyncing: true });

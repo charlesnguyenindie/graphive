@@ -27,6 +27,7 @@ import { UnifiedControls } from './components/UnifiedControls';
 import { ToastContainer } from './components/ToastContainer';
 import { PropertyInspector } from './components/PropertyInspector';
 import { DashboardPanel } from './components/DashboardPanel';
+import { DeleteModal } from './components/DeleteModal';
 import './App.css';
 
 // Register custom node types
@@ -50,7 +51,7 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
     // V10: Get fitView from React Flow
     const { fitView } = useReactFlow();
 
-    const { nodes, edges, onNodesChange, onEdgesChange, onConnect, onReconnect, deleteSelected, activeDashboardId, initializeGraph } =
+    const { nodes, edges, onNodesChange, onEdgesChange, onConnect, onReconnect, setDeleteModalOpen, activeDashboardId, initializeGraph, showHiddenItems } =
         useGraphStore(
             useShallow((state) => ({
                 nodes: state.nodes,
@@ -59,9 +60,10 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
                 onEdgesChange: state.onEdgesChange,
                 onConnect: state.onConnect,
                 onReconnect: state.onReconnect,
-                deleteSelected: state.deleteSelected,
+                setDeleteModalOpen: state.setDeleteModalOpen,
                 activeDashboardId: state.activeDashboardId,
                 initializeGraph: state.initializeGraph,
+                showHiddenItems: state.showHiddenItems,
             }))
         );
 
@@ -101,7 +103,7 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
         prevDashboardIdRef.current = activeDashboardId;
     }, [activeDashboardId, fitView]);
 
-    // Handle keyboard deletion
+    // Handle keyboard deletion - V18: Open modal instead of direct delete
     const handleKeyDown = useCallback(
         (event: React.KeyboardEvent) => {
             if (event.key === 'Backspace' || event.key === 'Delete') {
@@ -113,14 +115,57 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
                     return;
                 }
 
-                // Ask for confirmation
-                if (window.confirm('Are you sure you want to delete the selected item(s)?')) {
-                    deleteSelected();
+                // V18: Open delete confirmation modal
+                const hasSelection = nodes.some(n => n.selected) || edges.some(e => e.selected);
+                if (hasSelection) {
+                    setDeleteModalOpen(true);
                 }
             }
         },
-        [deleteSelected]
+        [nodes, edges, setDeleteModalOpen]
     );
+
+    // V19: Ghost Mode Logic
+    const processedNodes = useMemo(() => {
+        if (!showHiddenItems) return nodes;
+
+        return nodes.map((node) => {
+            if (node.hidden) {
+                return {
+                    ...node,
+                    hidden: false, // Force render
+                    style: {
+                        ...node.style,
+                        opacity: 0.4,
+                        borderStyle: 'dashed',
+                        filter: 'grayscale(1)',
+                    },
+                    zIndex: -1,
+                };
+            }
+            return node;
+        });
+    }, [nodes, showHiddenItems]);
+
+    const processedEdges = useMemo(() => {
+        if (!showHiddenItems) return edges;
+
+        return edges.map((edge) => {
+            if (edge.hidden) {
+                return {
+                    ...edge,
+                    hidden: false, // Force render
+                    style: {
+                        ...edge.style,
+                        opacity: 0.3,
+                        strokeDasharray: '5,5',
+                    },
+                    zIndex: -1,
+                };
+            }
+            return edge;
+        });
+    }, [edges, showHiddenItems]);
 
     // V3/V4: Magnetic handles - toggle connecting state + track origin
     const handleConnectStart = useCallback(
@@ -191,8 +236,8 @@ function GraphCanvas({ onSettingsClick }: { onSettingsClick: () => void }) {
             {/* V12: Graphive title overlay removed for distraction-free studio */}
 
             <ReactFlow
-                nodes={nodes}
-                edges={edges}
+                nodes={processedNodes}
+                edges={processedEdges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={handleConnect}
@@ -278,6 +323,9 @@ function App() {
                     isOpen={isSettingsOpen}
                     onClose={() => setIsSettingsOpen(false)}
                 />
+
+                {/* V18: Delete Confirmation Modal */}
+                <DeleteModal />
 
                 {/* Only render canvas when authenticated */}
                 {isAuthenticated && (

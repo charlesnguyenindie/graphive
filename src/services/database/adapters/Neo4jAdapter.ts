@@ -428,7 +428,8 @@ export class Neo4jAdapter implements GraphDBAdapter {
      */
     async createEdge(edgeId: string, sourceId: string, targetId: string, label: string = 'LINK'): Promise<void> {
         await this.runQuery(
-            `MATCH (a {id: $sID}), (b {id: $tID}) 
+            `MATCH (a), (b) 
+             WHERE (elementId(a) = $sID OR a.id = $sID) AND (elementId(b) = $tID OR b.id = $tID)
              CREATE (a)-[r:${label} {id: $rID}]->(b)`,
             { sID: sourceId, tID: targetId, rID: edgeId }
         );

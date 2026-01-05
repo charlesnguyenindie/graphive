@@ -1119,8 +1119,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
             }
 
             // Parse layout
-            let nodesLayout: Record<string, { x?: number; y?: number; w?: number; h?: number }> = {};
-            let edgesLayout: Record<string, { sourceHandle?: string | null; targetHandle?: string | null }> = {};
+            let nodesLayout: Record<string, { x?: number; y?: number; w?: number; h?: number; hidden?: boolean }> = {};
+            let edgesLayout: Record<string, { sourceHandle?: string | null; targetHandle?: string | null; hidden?: boolean }> = {};
 
             try {
                 const parsed = JSON.parse(dashboard.layout);
@@ -1157,6 +1157,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
                         // V15 Fix: Restore dimensions
                         width: saved.w,
                         height: saved.h,
+                        hidden: saved.hidden, // V23: Restore hidden state
                         style: {
                             ...node.style,
                             width: saved.w,
@@ -1175,6 +1176,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
                         ...edge,
                         sourceHandle: saved.sourceHandle ?? edge.sourceHandle,
                         targetHandle: saved.targetHandle ?? edge.targetHandle,
+                        hidden: saved.hidden, // V23: Restore hidden state
                     };
                 }
                 return edge;
@@ -1207,8 +1209,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
         // Build layout object from current node positions/dimensions AND edge handles (V22)
         const layout: {
-            nodes: Record<string, { x: number; y: number; w?: number; h?: number }>;
-            edges: Record<string, { sourceHandle?: string | null; targetHandle?: string | null }>;
+            nodes: Record<string, { x: number; y: number; w?: number; h?: number; hidden?: boolean }>;
+            edges: Record<string, { sourceHandle?: string | null; targetHandle?: string | null; hidden?: boolean }>;
         } = { nodes: {}, edges: {} };
 
         for (const node of nodes) {
@@ -1221,15 +1223,18 @@ export const useGraphStore = create<GraphState>((set, get) => ({
                 y: node.position.y,
                 w,
                 h,
+                hidden: node.hidden, // V23
             };
         }
 
         // V22: Save edge handles
         for (const edge of edges) {
-            if (edge.sourceHandle || edge.targetHandle) {
+            // V23: Save hidden state for all edges, or handles if present
+            if (edge.sourceHandle || edge.targetHandle || edge.hidden) {
                 layout.edges[edge.id] = {
                     sourceHandle: edge.sourceHandle,
-                    targetHandle: edge.targetHandle
+                    targetHandle: edge.targetHandle,
+                    hidden: edge.hidden // V23
                 };
             }
         }
@@ -1265,22 +1270,23 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
         // Build layout
         const layout: {
-            nodes: Record<string, { x: number; y: number; w?: number; h?: number }>;
-            edges: Record<string, { sourceHandle?: string | null; targetHandle?: string | null }>;
+            nodes: Record<string, { x: number; y: number; w?: number; h?: number; hidden?: boolean }>;
+            edges: Record<string, { sourceHandle?: string | null; targetHandle?: string | null; hidden?: boolean }>;
         } = { nodes: {}, edges: {} };
 
         for (const node of nodes) {
             const w = node.measured?.width ?? node.width ?? (typeof node.style?.width === 'number' ? node.style.width : undefined);
             const h = node.measured?.height ?? node.height ?? (typeof node.style?.height === 'number' ? node.style.height : undefined);
-            layout.nodes[node.id] = { x: node.position.x, y: node.position.y, w, h };
+            layout.nodes[node.id] = { x: node.position.x, y: node.position.y, w, h, hidden: node.hidden };
         }
 
         // V22: Copy edge handles
         for (const edge of edges) {
-            if (edge.sourceHandle || edge.targetHandle) {
+            if (edge.sourceHandle || edge.targetHandle || edge.hidden) {
                 layout.edges[edge.id] = {
                     sourceHandle: edge.sourceHandle,
-                    targetHandle: edge.targetHandle
+                    targetHandle: edge.targetHandle,
+                    hidden: edge.hidden
                 };
             }
         }

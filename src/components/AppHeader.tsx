@@ -1,7 +1,7 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useConnectionStore } from '../store/useConnectionStore';
 import { useGraphStore } from '../store/useGraphStore';
-import { closeDriver } from '../services/neo4jService';
+import { closeAdapter as closeDriver } from '../services/database';
 import './ConnectionModal.css';
 
 export function AppHeader() {

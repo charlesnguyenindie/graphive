@@ -14,7 +14,7 @@ import {
 } from '@xyflow/react';
 import {
     executeQuery as neo4jExecuteQuery,
-    isDriverInitialized,
+    isAdapterInitialized as isDriverInitialized,
     checkConnection as neo4jCheckConnection,
     // V8: CRUD operations for sync
     createNode as neo4jCreateNode,
@@ -40,8 +40,8 @@ import {
     deleteDashboard as neo4jDeleteDashboard,
     saveDashboardsOrder as neo4jSaveDashboardsOrder,
     renameDashboard as neo4jRenameDashboard,
-    DashboardMeta,
-} from '../services/neo4jService';
+} from '../services/database';
+import { DashboardMeta } from '../services/database/types';
 import { getLayoutedElements } from '../services/layoutService';
 import { useToastStore } from './useToastStore';
 

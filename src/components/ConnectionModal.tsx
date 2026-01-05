@@ -9,7 +9,7 @@ import {
     shouldShowMixedContentWarning,
     RecentConnection,
 } from '../config/connection';
-import { testConnection } from '../services/neo4jService';
+import { testConnection } from '../services/database';
 import './ConnectionModal.css';
 
 // Protocol options for dropdown
@@ -98,6 +98,7 @@ export function ConnectionModal() {
         setTestError(null);
 
         const config: ConnectionConfig = {
+            provider: 'neo4j',  // V16: Default to Neo4j
             protocol,
             host: host.trim(),
             port: port.trim() || DEFAULT_PORTS[protocol],

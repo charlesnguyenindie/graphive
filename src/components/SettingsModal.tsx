@@ -2,7 +2,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { X, ExternalLink, Mail } from 'lucide-react';
 import { useConnectionStore } from '../store/useConnectionStore';
 import { useGraphStore } from '../store/useGraphStore';
-import { closeDriver } from '../services/neo4jService';
+import { closeAdapter as closeDriver } from '../services/database';
 import './SettingsModal.css';
 
 interface SettingsModalProps {

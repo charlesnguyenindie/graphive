@@ -5,7 +5,8 @@ import {
     Pencil, Trash2, Check, X, Loader2, Plus, GripVertical
 } from 'lucide-react';
 import { useGraphStore } from '../store/useGraphStore';
-import { getDashboards, deleteDashboard, DashboardMeta } from '../services/neo4jService';
+import { getDashboards, deleteDashboard } from '../services/database';
+import { DashboardMeta } from '../services/database/types';
 import { colors, spacing, typography, shadows, radii, transitions } from '../design_tokens';
 import { useToastStore } from '../store/useToastStore';
 

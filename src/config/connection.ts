@@ -5,6 +5,7 @@
 export type Protocol = 'bolt' | 'bolt+s' | 'neo4j' | 'neo4j+s' | 'http' | 'https';
 
 export interface ConnectionConfig {
+    provider: 'neo4j' | 'falkordb';  // V16: Database provider
     protocol: Protocol;
     host: string;      // e.g., "localhost" or "db-id.databases.neo4j.io"
     port: string;      // e.g., "7687"

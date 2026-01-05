@@ -3,7 +3,7 @@ import {
     ConnectionConfig,
     RecentConnection,
 } from '../config/connection';
-import { initializeDriver } from '../services/neo4jService';
+import { initializeAdapter as initializeDriver } from '../services/database';
 
 // Storage keys
 const STORAGE_KEYS = {
